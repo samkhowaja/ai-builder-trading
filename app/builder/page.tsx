@@ -27,6 +27,20 @@ type QuizItem = {
   answer: string;
 };
 
+type ScreenshotIdea = {
+  label: string;
+  description: string;
+};
+
+type ModelGuide = {
+  overview: string;
+  story: string;
+  rulesChecklist: string[];
+  invalidation: string;
+  screenshotIdeas: ScreenshotIdea[];
+  practiceSteps: string[];
+};
+
 const createId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const initialModels: EntryModel[] = [
@@ -71,18 +85,16 @@ export default function BuilderPage() {
   const [loadingQuiz, setLoadingQuiz] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
 
-  // AI Coach
-  const [coachMode, setCoachMode] = useState<"explain" | "improve" | "examples">(
-    "explain",
-  );
-  const [coachText, setCoachText] = useState<string | null>(null);
-  const [loadingCoach, setLoadingCoach] = useState(false);
-  const [coachError, setCoachError] = useState<string | null>(null);
-
   // Create model from YouTube video
   const [videoUrlInput, setVideoUrlInput] = useState("");
   const [creatingFromVideo, setCreatingFromVideo] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+
+  // Learn view
+  const [viewMode, setViewMode] = useState<"learn" | "edit">("learn");
+  const [guide, setGuide] = useState<ModelGuide | null>(null);
+  const [loadingGuide, setLoadingGuide] = useState(false);
+  const [guideError, setGuideError] = useState<string | null>(null);
 
   // Select first model by default
   useEffect(() => {
@@ -92,6 +104,43 @@ export default function BuilderPage() {
   }, [models, selectedModelId]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId) || null;
+
+  // Fetch learning guide whenever selected model changes
+  useEffect(() => {
+    if (!selectedModel) {
+      setGuide(null);
+      return;
+    }
+    fetchGuide(selectedModel);
+  }, [selectedModelId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchGuide = async (model: EntryModel) => {
+    setLoadingGuide(true);
+    setGuideError(null);
+    setGuide(null);
+
+    try {
+      const res = await fetch("/api/explain-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setGuideError(data.error || "Failed to generate learning guide.");
+        return;
+      }
+
+      setGuide(data.guide as ModelGuide);
+    } catch (err) {
+      console.error(err);
+      setGuideError("Failed to contact learning guide API.");
+    } finally {
+      setLoadingGuide(false);
+    }
+  };
 
   const handleCreateModelFromVideo = async () => {
     if (!videoUrlInput) return;
@@ -121,8 +170,9 @@ export default function BuilderPage() {
       setModels((prev) => [...prev, newModel]);
       setSelectedModelId(newModel.id);
       setQuiz(null);
-      setCoachText(null);
+      setGuide(null);
       setVideoUrlInput("");
+      setViewMode("learn");
     } catch (err) {
       console.error(err);
       setVideoError("Could not contact video analyzer API.");
@@ -151,7 +201,8 @@ export default function BuilderPage() {
     setModels((prev) => [...prev, newModel]);
     setSelectedModelId(newModel.id);
     setQuiz(null);
-    setCoachText(null);
+    setGuide(null);
+    setViewMode("learn");
   };
 
   const handleDuplicateModel = (id: string) => {
@@ -165,7 +216,8 @@ export default function BuilderPage() {
     setModels((prev) => [...prev, copy]);
     setSelectedModelId(copy.id);
     setQuiz(null);
-    setCoachText(null);
+    setGuide(null);
+    setViewMode("learn");
   };
 
   const handleDeleteModel = (id: string) => {
@@ -173,7 +225,7 @@ export default function BuilderPage() {
     if (selectedModelId === id) {
       setSelectedModelId(null);
       setQuiz(null);
-      setCoachText(null);
+      setGuide(null);
     }
   };
 
@@ -230,39 +282,14 @@ export default function BuilderPage() {
     }
   };
 
-  const handleAskCoach = async () => {
-    if (!selectedModel) return;
-
-    setLoadingCoach(true);
-    setCoachError(null);
-
-    try {
-      const res = await fetch("/api/explain-model", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: coachMode,
-          model: selectedModel,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setCoachError(data.error || "Something went wrong.");
-        setCoachText(null);
-        return;
-      }
-
-      setCoachText(data.text || "");
-    } catch (err) {
-      console.error(err);
-      setCoachError("Failed to talk to AI coach.");
-      setCoachText(null);
-    } finally {
-      setLoadingCoach(false);
-    }
-  };
+  const renderParagraphs = (text: string) =>
+    text
+      .split(/\n\s*\n/)
+      .map((p, idx) => (
+        <p key={idx} className="mb-2 text-[13px] leading-relaxed text-zinc-200">
+          {p.trim()}
+        </p>
+      ));
 
   return (
     <div className="min-h-screen bg-black text-zinc-100">
@@ -321,7 +348,7 @@ export default function BuilderPage() {
                 onClick={() => {
                   setSelectedModelId(model.id);
                   setQuiz(null);
-                  setCoachText(null);
+                  setViewMode("learn");
                 }}
               >
                 <div className="flex items-center justify-between">
@@ -371,325 +398,445 @@ export default function BuilderPage() {
           </div>
         </aside>
 
-        {/* Right: Editor + AI */}
+        {/* Right: Learn view + Quiz + optional Edit */}
         <main className="flex-1 space-y-4">
           {!selectedModel ? (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-6 text-sm text-zinc-400">
-              Select or create a model to start editing.
+              Select or create a model to start learning.
             </div>
           ) : (
             <>
-              {/* Model Editor */}
-              <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
-                <h2 className="mb-3 text-sm font-semibold text-zinc-100">
-                  Model Editor
-                </h2>
+              {/* Header: model summary + view mode toggle */}
+              <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-center">
+                <div>
+                  <h2 className="text-lg font-semibold text-zinc-100">
+                    {selectedModel.name}
+                  </h2>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    {selectedModel.style} • {selectedModel.timeframe} •{" "}
+                    {selectedModel.instrument} • Session:{" "}
+                    {selectedModel.session || "N/A"} • Risk:{" "}
+                    {selectedModel.riskPerTrade}% per trade
+                  </p>
+                  {selectedModel.sourceVideoUrl && (
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      Source video:{" "}
+                      {selectedModel.sourceVideoTitle ||
+                        selectedModel.sourceVideoUrl}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <button
+                    onClick={() => setViewMode("learn")}
+                    className={`rounded-full px-3 py-1 font-medium ${
+                      viewMode === "learn"
+                        ? "bg-emerald-500 text-black"
+                        : "bg-zinc-800 text-zinc-200"
+                    }`}
+                  >
+                    📘 Learn Mode
+                  </button>
+                  <button
+                    onClick={() => setViewMode("edit")}
+                    className={`rounded-full px-3 py-1 font-medium ${
+                      viewMode === "edit"
+                        ? "bg-zinc-100 text-black"
+                        : "bg-zinc-800 text-zinc-200"
+                    }`}
+                  >
+                    ✏️ Edit Model
+                  </button>
+                </div>
+              </div>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  {/* Left column: basic fields */}
-                  <div className="space-y-2">
-                    <label className="block text-xs text-zinc-400">
-                      Name
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.name}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, { name: e.target.value })
-                        }
-                      />
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Style
-                      <select
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.style}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, { style: e.target.value })
-                        }
-                      >
-                        <option>Scalping</option>
-                        <option>Intraday</option>
-                        <option>Swing</option>
-                      </select>
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Timeframe
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.timeframe}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            timeframe: e.target.value,
-                          })
-                        }
-                        placeholder="e.g. M5, M15, H1"
-                      />
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Instrument
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.instrument}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            instrument: e.target.value,
-                          })
-                        }
-                        placeholder="e.g. EURUSD, NAS100"
-                      />
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Session
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.session}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            session: e.target.value,
-                          })
-                        }
-                        placeholder="London, New York, Asia"
-                      />
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Risk per trade (%)
-                      <input
-                        type="number"
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.riskPerTrade}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            riskPerTrade: Number(e.target.value),
-                          })
-                        }
-                        min={0}
-                        max={5}
-                        step={0.1}
-                      />
-                    </label>
-                  </div>
-
-                  {/* Right column: description & rules */}
-                  <div className="space-y-2">
-                    <label className="block text-xs text-zinc-400">
-                      Description
-                      <textarea
-                        className="mt-1 h-20 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.description}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            description: e.target.value,
-                          })
-                        }
-                        placeholder="Short overview of what this model does..."
-                      />
-                    </label>
-
-                    <label className="block text-xs text-zinc-400">
-                      Rules
-                      <textarea
-                        className="mt-1 h-28 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.rules}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, { rules: e.target.value })
-                        }
-                        placeholder="- HTF bias\n- Liquidity sweep\n- FVG entry\n- SL, TP..."
-                      />
-                    </label>
+              {/* Progress bar for learn flow */}
+              {viewMode === "learn" && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3">
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    {["Overview", "Price Story", "Checklist", "When Not To Trade", "Screenshot Ideas", "Practice"].map(
+                      (label, idx) => (
+                        <div key={label} className="flex flex-1 items-center">
+                          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-black">
+                            {idx + 1}
+                          </div>
+                          <span className="ml-1 hidden md:inline">
+                            {label}
+                          </span>
+                          {idx < 5 && (
+                            <div className="mx-1 h-px flex-1 bg-zinc-700" />
+                          )}
+                        </div>
+                      ),
+                    )}
                   </div>
                 </div>
+              )}
 
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <label className="block text-xs text-zinc-400">
-                    Checklist (one per line)
-                    <textarea
-                      className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                      value={selectedModel.checklist.join("\n")}
-                      onChange={(e) =>
-                        handleChecklistChange(selectedModel.id, e.target.value)
-                      }
-                      placeholder={
-                        "HTF bias confirmed?\nAsia low taken?\nFVG present?\nNews checked?"
-                      }
-                    />
-                  </label>
+              {/* Learn or Edit */}
+              {viewMode === "learn" ? (
+                <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
+                  {loadingGuide && (
+                    <p className="text-xs text-zinc-400">
+                      Building your study guide...
+                    </p>
+                  )}
+                  {guideError && (
+                    <p className="text-xs text-red-400">{guideError}</p>
+                  )}
+                  {!loadingGuide && guide && (
+                    <>
+                      {/* OVERVIEW */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          1. Overview – What this model is about
+                        </h3>
+                        {renderParagraphs(guide.overview)}
+                      </div>
 
-                  <label className="block text-xs text-zinc-400">
-                    Tags (comma separated)
-                    <textarea
-                      className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                      value={selectedModel.tags.join(", ")}
-                      onChange={(e) =>
-                        handleTagsChange(selectedModel.id, e.target.value)
-                      }
-                      placeholder="EURUSD, London, ICT, FVG"
-                    />
-                  </label>
-                </div>
+                      {/* STORY */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          2. Step-by-step price story
+                        </h3>
+                        {renderParagraphs(guide.story)}
+                      </div>
 
-                {/* YouTube reference section */}
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                  <div className="space-y-2 md:col-span-1">
-                    <h3 className="text-xs font-semibold text-zinc-300">
-                      YouTube Reference
-                    </h3>
-                    <label className="block text-xs text-zinc-400">
-                      Video URL
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.sourceVideoUrl ?? ""}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            sourceVideoUrl: e.target.value,
-                          })
-                        }
-                        placeholder="https://www.youtube.com/watch?v=..."
-                      />
-                    </label>
-                    <label className="block text-xs text-zinc-400">
-                      Video Title
-                      <input
-                        className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.sourceVideoTitle ?? ""}
-                        onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            sourceVideoTitle: e.target.value,
-                          })
-                        }
-                        placeholder="e.g. London session liquidity sweep strategy"
-                      />
-                    </label>
+                      {/* CHECKLIST */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          3. Rules checklist (before you click Buy/Sell)
+                        </h3>
+                        <ul className="space-y-1 text-[13px] text-zinc-200">
+                          {guide.rulesChecklist.map((item, idx) => (
+                            <li
+                              key={idx}
+                              className="flex items-start gap-2 leading-relaxed"
+                            >
+                              <span className="mt-[3px] inline-block h-3 w-3 rounded border border-emerald-500" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {/* INVALIDATION */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          4. When NOT to trade this model
+                        </h3>
+                        {renderParagraphs(guide.invalidation)}
+                      </div>
+
+                      {/* SCREENSHOT IDEAS */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          5. Screenshot & image references
+                        </h3>
+                        <p className="mb-2 text-[11px] text-zinc-400">
+                          Use these as a checklist while watching the YouTube
+                          video or replaying the chart. For each card, pause the
+                          video and take a screenshot or recreate it in
+                          TradingView.
+                        </p>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {guide.screenshotIdeas.map((img, idx) => (
+                            <div
+                              key={idx}
+                              className="flex flex-col rounded-lg border border-zinc-800 bg-black/40 p-3 text-[12px]"
+                            >
+                              <div className="mb-2 flex-1 rounded-md border border-dashed border-zinc-700 bg-zinc-900/60 p-4 text-center text-[11px] text-zinc-500">
+                                Image placeholder
+                              </div>
+                              <p className="font-semibold text-zinc-100">
+                                {img.label}
+                              </p>
+                              <p className="mt-1 text-[11px] text-zinc-300">
+                                {img.description}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* PRACTICE STEPS */}
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                          6. Practice drills
+                        </h3>
+                        <ul className="space-y-1 text-[13px] text-zinc-200">
+                          {guide.practiceSteps.map((step, idx) => (
+                            <li key={idx} className="flex gap-2">
+                              <span className="mt-[2px] text-emerald-400">
+                                ●
+                              </span>
+                              <span>{step}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  )}
+                </section>
+              ) : (
+                /* EDITOR MODE – same fields you had before */
+                <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
+                  <h2 className="mb-3 text-sm font-semibold text-zinc-100">
+                    Model Editor
+                  </h2>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {/* Left column: basic fields */}
+                    <div className="space-y-2">
+                      <label className="block text-xs text-zinc-400">
+                        Name
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.name}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, { name: e.target.value })
+                          }
+                        />
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Style
+                        <select
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.style}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              style: e.target.value,
+                            })
+                          }
+                        >
+                          <option>Scalping</option>
+                          <option>Intraday</option>
+                          <option>Swing</option>
+                        </select>
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Timeframe
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.timeframe}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              timeframe: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. M5, M15, H1"
+                        />
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Instrument
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.instrument}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              instrument: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. EURUSD, NAS100"
+                        />
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Session
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.session}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              session: e.target.value,
+                            })
+                          }
+                          placeholder="London, New York, Asia"
+                        />
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Risk per trade (%)
+                        <input
+                          type="number"
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.riskPerTrade}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              riskPerTrade: Number(e.target.value),
+                            })
+                          }
+                          min={0}
+                          max={5}
+                          step={0.1}
+                        />
+                      </label>
+                    </div>
+
+                    {/* Right column: description & rules */}
+                    <div className="space-y-2">
+                      <label className="block text-xs text-zinc-400">
+                        Description
+                        <textarea
+                          className="mt-1 h-20 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.description}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              description: e.target.value,
+                            })
+                          }
+                          placeholder="Short overview of what this model does..."
+                        />
+                      </label>
+
+                      <label className="block text-xs text-zinc-400">
+                        Rules
+                        <textarea
+                          className="mt-1 h-28 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.rules}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              rules: e.target.value,
+                            })
+                          }
+                          placeholder="- HTF bias\n- Liquidity sweep\n- FVG entry\n- SL, TP..."
+                        />
+                      </label>
+                    </div>
                   </div>
 
-                  <div className="md:col-span-2">
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
                     <label className="block text-xs text-zinc-400">
-                      Important Timestamps / Notes
+                      Checklist (one per line)
                       <textarea
                         className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
-                        value={selectedModel.sourceTimestamps ?? ""}
+                        value={selectedModel.checklist.join("\n")}
                         onChange={(e) =>
-                          updateModel(selectedModel.id, {
-                            sourceTimestamps: e.target.value,
-                          })
+                          handleChecklistChange(selectedModel.id, e.target.value)
                         }
                         placeholder={
-                          "01:30 - HTF bias explanation\n" +
-                          "04:10 - Liquidity above previous high\n" +
-                          "06:30 - Fair Value Gap entry\n" +
-                          "09:15 - TP at next high"
+                          "HTF bias confirmed?\nAsia low taken?\nFVG present?\nNews checked?"
                         }
                       />
                     </label>
-                  </div>
-                </div>
-              </section>
 
-              {/* AI Zone: Quiz + Coach */}
-              <section className="grid gap-4 md:grid-cols-2">
-                {/* Quiz Card */}
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-zinc-100">
-                      🧠 Quiz Yourself
-                    </h2>
-                    <button
-                      onClick={handleGenerateQuiz}
-                      disabled={loadingQuiz}
-                      className="rounded-md bg-sky-500 px-3 py-1 text-xs font-medium text-black disabled:cursor-not-allowed disabled:bg-sky-900"
-                    >
-                      {loadingQuiz ? "Generating..." : "Generate Quiz"}
-                    </button>
+                    <label className="block text-xs text-zinc-400">
+                      Tags (comma separated)
+                      <textarea
+                        className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                        value={selectedModel.tags.join(", ")}
+                        onChange={(e) =>
+                          handleTagsChange(selectedModel.id, e.target.value)
+                        }
+                        placeholder="EURUSD, London, ICT, FVG"
+                      />
+                    </label>
                   </div>
 
-                  {quizError && (
-                    <p className="mb-2 text-xs text-red-400">{quizError}</p>
-                  )}
+                  {/* YouTube reference section */}
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <div className="space-y-2 md:col-span-1">
+                      <h3 className="text-xs font-semibold text-zinc-300">
+                        YouTube Reference
+                      </h3>
+                      <label className="block text-xs text-zinc-400">
+                        Video URL
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.sourceVideoUrl ?? ""}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              sourceVideoUrl: e.target.value,
+                            })
+                          }
+                          placeholder="https://www.youtube.com/watch?v=..."
+                        />
+                      </label>
+                      <label className="block text-xs text-zinc-400">
+                        Video Title
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.sourceVideoTitle ?? ""}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              sourceVideoTitle: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. London session liquidity sweep strategy"
+                        />
+                      </label>
+                    </div>
 
-                  <div className="max-h-64 overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3 text-xs leading-relaxed text-zinc-100">
-                    {quiz && quiz.length > 0 ? (
-                      <ol className="space-y-2 text-[11px]">
-                        {quiz.map((item, idx) => (
-                          <li key={idx}>
-                            <p className="font-medium">
-                              Q{idx + 1}. {item.question}
-                            </p>
-                            <p className="mt-1 text-zinc-400">
-                              <span className="font-semibold text-emerald-400">
-                                Answer:
-                              </span>{" "}
-                              {item.answer}
-                            </p>
-                          </li>
-                        ))}
-                      </ol>
-                    ) : (
-                      <p className="text-[11px] text-zinc-500">
-                        Click{" "}
-                        <span className="font-medium text-zinc-300">
-                          Generate Quiz
-                        </span>{" "}
-                        to test yourself on this model&apos;s rules, checklist and
-                        risk management.
-                      </p>
-                    )}
+                    <div className="md:col-span-2">
+                      <label className="block text-xs text-zinc-400">
+                        Important Timestamps / Notes
+                        <textarea
+                          className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.sourceTimestamps ?? ""}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              sourceTimestamps: e.target.value,
+                            })
+                          }
+                          placeholder={
+                            "01:30 - HTF bias explanation\n" +
+                            "04:10 - Liquidity above previous high\n" +
+                            "06:30 - Fair Value Gap entry\n" +
+                            "09:15 - TP at next high"
+                          }
+                        />
+                      </label>
+                    </div>
                   </div>
-                </div>
+                </section>
+              )}
 
-                {/* AI Coach Panel */}
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold text-zinc-100">
-                      🧑‍🏫 AI Coach
-                    </h2>
-
-                    <select
-                      value={coachMode}
-                      onChange={(e) =>
-                        setCoachMode(
-                          e.target.value as "explain" | "improve" | "examples",
-                        )
-                      }
-                      className="rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs text-zinc-100 outline-none"
-                    >
-                      <option value="explain">Explain this model</option>
-                      <option value="improve">Suggest improvements</option>
-                      <option value="examples">Example trade scenarios</option>
-                    </select>
-                  </div>
-
+              {/* Quiz card (works for both modes) */}
+              <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-100">
+                    🧠 Step 7 – Quiz Yourself
+                  </h2>
                   <button
-                    onClick={handleAskCoach}
-                    disabled={loadingCoach}
-                    className="mb-3 w-full rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-black disabled:cursor-not-allowed disabled:bg-emerald-900"
+                    onClick={handleGenerateQuiz}
+                    disabled={loadingQuiz}
+                    className="rounded-md bg-sky-500 px-3 py-1 text-xs font-medium text-black disabled:cursor-not-allowed disabled:bg-sky-900"
                   >
-                    {loadingCoach ? "Thinking..." : "Ask AI Coach"}
+                    {loadingQuiz ? "Generating..." : "Generate Quiz"}
                   </button>
+                </div>
 
-                  {coachError && (
-                    <p className="mb-2 text-xs text-red-400">{coachError}</p>
+                {quizError && (
+                  <p className="mb-2 text-xs text-red-400">{quizError}</p>
+                )}
+
+                <div className="max-h-64 overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3 text-xs leading-relaxed text-zinc-100">
+                  {quiz && quiz.length > 0 ? (
+                    <ol className="space-y-2 text-[11px]">
+                      {quiz.map((item, idx) => (
+                        <li key={idx}>
+                          <p className="font-medium">
+                            Q{idx + 1}. {item.question}
+                          </p>
+                          <p className="mt-1 text-zinc-400">
+                            <span className="font-semibold text-emerald-400">
+                              Answer:
+                            </span>{" "}
+                            {item.answer}
+                          </p>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-[11px] text-zinc-500">
+                      After reading the learning flow above, use this quiz to
+                      check if you remember the rules, invalidation and
+                      risk-management of this model.
+                    </p>
                   )}
-
-                  <div className="max-h-64 overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3 text-xs leading-relaxed text-zinc-100">
-                    {coachText ? (
-                      <pre className="whitespace-pre-wrap text-[11px]">
-                        {coachText}
-                      </pre>
-                    ) : (
-                      <p className="text-[11px] text-zinc-500">
-                        Use{" "}
-                        <span className="font-medium text-zinc-300">
-                          Explain / Improve / Examples
-                        </span>{" "}
-                        to turn this model into a detailed study guide with
-                        image references from the YouTube video.
-                      </p>
-                    )}
-                  </div>
                 </div>
               </section>
             </>
