@@ -18,6 +18,16 @@ type Body = {
   images: UploadImage[];
 };
 
+type ChartAnalysis = {
+  overview: string;
+  htfBias: string;
+  liquidityStory: string;
+  entryPlan: string;
+  riskManagement: string;
+  redFlags: string;
+  checklist: string[];
+};
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Body;
@@ -26,7 +36,7 @@ export async function POST(request: Request) {
     if (!pair || !images || images.length === 0) {
       return NextResponse.json(
         { error: "pair and at least one image are required." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -42,31 +52,38 @@ The user has uploaded multiple images that (most likely) correspond to these tim
 User notes (if any):
 ${notes || "No extra notes."}
 
-Your job:
-1) Identify the higher-timeframe narrative.
-   - Trend / range?
-   - Key highs/lows, liquidity pools, obvious stops.
-2) Using all images together, explain the liquidity story.
-   - Which highs/lows are being engineered, which are being raided?
-3) Find 1–2 possible high-probability entries.
-   - Mention which timeframe you would execute on.
-   - Give an example of entry, SL and TP (in R, not exact pips).
-4) List red flags / reasons NOT to trade.
-   - News, choppy structure, no clear external liquidity, etc.
-5) Finish with a short checklist the user can re-use.
+You MUST answer as a single JSON object with this exact shape (no extra keys):
 
-Keep it beginner-friendly, but still technically correct.
-Do NOT guess exact prices; speak in terms of structure and behaviour.`;
+{
+  "overview": "high-level summary of the setup and market conditions",
+  "htfBias": "clear explanation of higher timeframe bias and structure",
+  "liquidityStory": "detailed narrative of liquidity grabs, inducement, stop hunts, and where money is resting",
+  "entryPlan": "step-by-step plan: which timeframe to execute on, what price behaviour you need to see, where to enter, and example SL/TP in R multiples",
+  "riskManagement": "how to size, what to avoid, how to manage if trade runs or stalls",
+  "redFlags": "when NOT to trade this setup: conditions, session issues, news, messy structure, etc.",
+  "checklist": [
+    "short bullet rules that must be true BEFORE taking an entry",
+    "each bullet is one clear condition to verify on the chart",
+    "focus on things the trader can visually check (structure, liquidity, timing, FVG, etc.)"
+  ]
+}
+
+Rules for the checklist:
+- 6 to 12 items total.
+- Very concrete (e.g. "Asia high/low taken" not "liquidity handled").
+- Think of it as a pre-flight checklist before order execution.
+
+Do NOT include any explanation outside the JSON.
+`;
 
     // Build multimodal content: text + multiple images
     const content: any[] = [{ type: "text", text: userText }];
 
     for (const img of images) {
       content.push({
-        type: "image_url", // 👈 this was the bug; must be image_url
+        type: "image_url",
         image_url: { url: img.dataUrl },
       });
-      // Tiny tag so the model knows which file it just saw
       content.push({
         type: "text",
         text: `Above image file name: ${img.name}`,
@@ -74,11 +91,13 @@ Do NOT guess exact prices; speak in terms of structure and behaviour.`;
     }
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini", // good cheap vision model
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: "You are a precise, honest trading assistant.",
+          content:
+            "You are a precise, honest trading assistant. Never hallucinate prices. Explain in clear, structured language.",
         },
         {
           role: "user",
@@ -88,15 +107,23 @@ Do NOT guess exact prices; speak in terms of structure and behaviour.`;
       temperature: 0.6,
     });
 
-    const analysis =
-      completion.choices[0]?.message?.content ??
-      "No analysis was generated.";
+    const raw = completion.choices[0]?.message?.content ?? "{}";
+    let parsed: ChartAnalysis;
 
-    return NextResponse.json({ analysis });
+    try {
+      parsed = JSON.parse(raw) as ChartAnalysis;
+    } catch (e) {
+      console.error("JSON parse error from OpenAI:", e, raw);
+      return NextResponse.json(
+        { error: "Failed to parse analysis JSON from model." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ analysis: parsed });
   } catch (err: any) {
     console.error("analyze-charts error:", err);
 
-    // Try to surface OpenAI's error message if available
     const message =
       err?.response?.data?.error?.message ||
       err?.message ||

@@ -3,10 +3,6 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 
-type AnalyzeResponse = {
-  analysis: string;
-};
-
 type UploadImage = {
   name: string;
   dataUrl: string;
@@ -15,6 +11,26 @@ type UploadImage = {
 type ClipboardImage = {
   file: File;
   previewUrl: string;
+};
+
+type ChartAnalysis = {
+  overview: string;
+  htfBias: string;
+  liquidityStory: string;
+  entryPlan: string;
+  riskManagement: string;
+  redFlags: string;
+  checklist: string[];
+};
+
+type AnalyzeResponse = {
+  analysis?: ChartAnalysis;
+  error?: string;
+};
+
+type ChecklistItemState = {
+  text: string;
+  done: boolean;
 };
 
 const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
@@ -111,7 +127,8 @@ export default function HomePage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<ChartAnalysis | null>(null);
+  const [checklist, setChecklist] = useState<ChecklistItemState[]>([]);
 
   // Load pairs from localStorage
   useEffect(() => {
@@ -150,6 +167,20 @@ export default function HomePage() {
     }
   }, [pairs]);
 
+  // When a new analysis arrives, reset checklist state
+  useEffect(() => {
+    if (analysis?.checklist) {
+      setChecklist(
+        analysis.checklist.map((text) => ({
+          text,
+          done: false,
+        })),
+      );
+    } else {
+      setChecklist([]);
+    }
+  }, [analysis]);
+
   const handlePairsTextChange = (raw: string) => {
     setPairsText(raw);
     const list = raw
@@ -182,6 +213,7 @@ export default function HomePage() {
   const handleClearImages = () => {
     setFiles([]);
     setAnalysis(null);
+    setChecklist([]);
     setError(null);
   };
 
@@ -198,6 +230,7 @@ export default function HomePage() {
     setLoading(true);
     setError(null);
     setAnalysis(null);
+    setChecklist([]);
 
     try {
       const imagePromises: Promise<UploadImage>[] = files.map(
@@ -227,14 +260,18 @@ export default function HomePage() {
         }),
       });
 
-      const data = (await res.json()) as AnalyzeResponse & { error?: string };
+      const data = (await res.json()) as AnalyzeResponse;
 
-      if (!res.ok) {
+      if (!res.ok || data.error) {
         setError(data.error || "Failed to analyze charts.");
         return;
       }
 
-      setAnalysis(data.analysis);
+      if (data.analysis) {
+        setAnalysis(data.analysis);
+      } else {
+        setError("Analysis response was empty.");
+      }
     } catch (err) {
       console.error(err);
       setError("Something went wrong while analyzing.");
@@ -243,14 +280,27 @@ export default function HomePage() {
     }
   };
 
-  const renderAnalysisParagraphs = (text: string) =>
-    text
+  const renderParagraphs = (text?: string) =>
+    (text || "")
       .split(/\n\s*\n/)
+      .filter((p) => p.trim().length > 0)
       .map((p, idx) => (
         <p key={idx} className="mb-2 text-sm leading-relaxed text-zinc-100">
           {p.trim()}
         </p>
       ));
+
+  const toggleChecklistItem = (index: number) => {
+    setChecklist((prev) =>
+      prev.map((item, idx) =>
+        idx === index ? { ...item, done: !item.done } : item,
+      ),
+    );
+  };
+
+  const completedCount = checklist.filter((c) => c.done).length;
+  const totalCount = checklist.length;
+  const allDone = totalCount > 0 && completedCount === totalCount;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
@@ -421,7 +471,7 @@ export default function HomePage() {
           {/* Step indicator */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between text-[11px] text-zinc-400">
-              {["Capture charts", "Queue screenshots", "Run analysis"].map(
+              {["Capture charts", "Queue screenshots", "Read playbook"].map(
                 (label, idx) => (
                   <div key={label} className="flex flex-1 items-center">
                     <div className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900 text-[11px] text-zinc-400 ring-1 ring-zinc-700">
@@ -439,7 +489,7 @@ export default function HomePage() {
             </div>
             <p className="text-[11px] text-zinc-500">
               Use file upload or paste to add charts. All timeframes are sent
-              together in a single analysis so the AI sees the full story.
+              together in a single run so the AI sees the full story.
             </p>
           </section>
 
@@ -489,19 +539,17 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* Analysis */}
+          {/* Ebook-style analysis + checklist */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-50">
-                  3. Multi-TF analysis
+                  3. Multi-TF playbook for{" "}
+                  <span className="text-emerald-300">{selectedPair}</span>
                 </h2>
                 <p className="text-[11px] text-zinc-500">
-                  Bias, liquidity story, entry idea and red-flags for{" "}
-                  <span className="font-semibold text-emerald-300">
-                    {selectedPair}
-                  </span>
-                  .
+                  Structured like a mini ebook: context, liquidity story, entry
+                  plan, risk, red flags, and a checklist.
                 </p>
               </div>
               {analysis && (
@@ -511,15 +559,128 @@ export default function HomePage() {
               )}
             </div>
 
-            <div className="max-h-[420px] overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3">
+            <div className="max-h-[460px] overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3">
               {analysis ? (
-                <div>{renderAnalysisParagraphs(analysis)}</div>
+                <div className="space-y-4 text-sm">
+                  {/* Overview */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
+                      1. Overview – what the market is doing
+                    </h3>
+                    {renderParagraphs(analysis.overview)}
+                  </div>
+
+                  {/* HTF Bias */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
+                      2. Higher timeframe bias & structure
+                    </h3>
+                    {renderParagraphs(analysis.htfBias)}
+                  </div>
+
+                  {/* Liquidity story */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
+                      3. Liquidity story – where the money sits
+                    </h3>
+                    {renderParagraphs(analysis.liquidityStory)}
+                  </div>
+
+                  {/* Entry plan */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
+                      4. Execution plan – how to enter
+                    </h3>
+                    {renderParagraphs(analysis.entryPlan)}
+                  </div>
+
+                  {/* Risk management */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
+                      5. Risk management & trade handling
+                    </h3>
+                    {renderParagraphs(analysis.riskManagement)}
+                  </div>
+
+                  {/* Red flags */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-red-300">
+                      6. Red flags – when NOT to take this setup
+                    </h3>
+                    {renderParagraphs(analysis.redFlags)}
+                  </div>
+
+                  {/* Checklist */}
+                  <div className="mt-3 rounded-lg border border-zinc-800 bg-black/60 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-[13px] font-semibold text-zinc-100">
+                          ✅ Entry checklist
+                        </h3>
+                        <p className="text-[11px] text-zinc-500">
+                          Use this as a pre-flight check before you even think
+                          about placing an order.
+                        </p>
+                      </div>
+                      <div className="text-right text-[11px]">
+                        <p className="font-semibold text-emerald-300">
+                          {completedCount} / {totalCount} checked
+                        </p>
+                        <p className="text-zinc-500">tap items to toggle</p>
+                      </div>
+                    </div>
+
+                    {checklist.length ? (
+                      <ul className="space-y-1 text-[13px] text-zinc-200">
+                        {checklist.map((item, idx) => (
+                          <li
+                            key={idx}
+                            className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-zinc-900/60"
+                            onClick={() => toggleChecklistItem(idx)}
+                          >
+                            <div
+                              className={`mt-[2px] flex h-4 w-4 items-center justify-center rounded-full border text-[10px] ${
+                                item.done
+                                  ? "border-emerald-400 bg-emerald-500 text-black"
+                                  : "border-zinc-500 bg-black text-transparent"
+                              }`}
+                            >
+                              ✓
+                            </div>
+                            <span
+                              className={
+                                item.done
+                                  ? "text-zinc-400 line-through"
+                                  : "text-zinc-100"
+                              }
+                            >
+                              {item.text}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-[11px] text-zinc-500">
+                        No checklist items were generated for this run.
+                      </p>
+                    )}
+
+                    {allDone && (
+                      <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
+                        All checklist items are marked as satisfied. This does
+                        NOT guarantee a winning trade, but it means the setup
+                        matches the model. Always follow your own risk plan.
+                      </p>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <p className="text-xs text-zinc-500">
                   Once you add charts and click{" "}
-                  <span className="font-semibold">Analyze Charts</span>, the
-                  trading story will appear here: HTF bias, liquidity sweeps,
-                  possible entries, and a reusable checklist.
+                  <span className="font-semibold">Analyze Charts</span>, you'll
+                  get a structured playbook here: HTF bias, liquidity story,
+                  entry plan, risk, red flags, and a checklist you can tick off
+                  before taking any trade.
                 </p>
               )}
             </div>
