@@ -9,7 +9,7 @@ type UploadImage = {
 };
 
 type ClipboardImage = {
-  file: File;
+  id: string;
   previewUrl: string;
 };
 
@@ -51,11 +51,19 @@ type SavedAnalysis = {
   notes: string;
   analysis: ChartAnalysis;
   candleEnds: Record<string, number>;
+  checklistState: ChecklistItemState[];
   createdAt: number;
+};
+
+type ChartImage = {
+  id: string;
+  name: string;
+  dataUrl: string;
 };
 
 const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
 const ANALYSIS_STORAGE_KEY = "ai-builder-chart-analysis-v1";
+const SCREENS_STORAGE_KEY = "ai-builder-screens-v1";
 
 const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -99,7 +107,14 @@ function formatRemaining(ms: number): string {
     .padStart(2, "0")}`;
 }
 
-/** Clipboard paste zone for screenshots */
+function makeId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2);
+}
+
+/** Clipboard paste zone for screenshots (thumbnails only) */
 function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
   const [images, setImages] = useState<ClipboardImage[]>([]);
 
@@ -115,7 +130,10 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
           if (file) {
             const previewUrl = URL.createObjectURL(file);
             newFiles.push(file);
-            setImages((prev) => [...prev, { file, previewUrl }]);
+            setImages((prev) => [
+              ...prev,
+              { id: makeId(), previewUrl },
+            ]);
           }
         }
       }
@@ -148,20 +166,20 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
-          In TradingView: copy a screenshot to clipboard, click in this box, and
-          press Ctrl+V or Cmd+V. The images will be added to your analysis pool
-          automatically.
+          In TradingView copy a screenshot to clipboard, click in this box, and
+          press Ctrl+V or Cmd+V. The images will also be stored under the
+          current pair.
         </p>
       ) : (
         <div className="mt-2 grid max-h-40 grid-cols-2 gap-2 overflow-auto">
-          {images.map((img, i) => (
+          {images.map((img) => (
             <div
-              key={i}
+              key={img.id}
               className="overflow-hidden rounded-md border border-zinc-800 bg-black"
             >
               <img
                 src={img.previewUrl}
-                alt={`pasted-${i}`}
+                alt="pasted preview"
                 className="h-full w-full object-cover"
               />
             </div>
@@ -183,7 +201,9 @@ export default function HomePage() {
     "M15",
   ]);
 
-  const [files, setFiles] = useState<File[]>([]);
+  // Persistent chart screenshots per pair
+  const [chartImages, setChartImages] = useState<ChartImage[]>([]);
+
   const [notes, setNotes] = useState("");
 
   const [loading, setLoading] = useState(false);
@@ -237,6 +257,36 @@ export default function HomePage() {
     }
   }, [pairs]);
 
+  // Load screenshots whenever pair changes
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined" || !selectedPair) return;
+      const raw = window.localStorage.getItem(SCREENS_STORAGE_KEY);
+      if (!raw) {
+        setChartImages([]);
+        return;
+      }
+      const store = JSON.parse(raw) as Record<string, ChartImage[]>;
+      setChartImages(store[selectedPair] || []);
+    } catch (e) {
+      console.error("Failed to load screenshots", e);
+      setChartImages([]);
+    }
+  }, [selectedPair]);
+
+  // Save screenshots whenever they change
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined" || !selectedPair) return;
+      const raw = window.localStorage.getItem(SCREENS_STORAGE_KEY);
+      const store = raw ? (JSON.parse(raw) as Record<string, ChartImage[]>) : {};
+      store[selectedPair] = chartImages;
+      window.localStorage.setItem(SCREENS_STORAGE_KEY, JSON.stringify(store));
+    } catch (e) {
+      console.error("Failed to save screenshots", e);
+    }
+  }, [chartImages, selectedPair]);
+
   // Load saved analysis whenever pair changes
   useEffect(() => {
     try {
@@ -263,30 +313,43 @@ export default function HomePage() {
         setSelectedTimeframes(saved.timeframes);
       }
       setCandleEnds(saved.candleEnds || {});
-      setChecklist(
-        (saved.analysis.checklist || []).map((item) => ({
-          text: item.text,
-          done: !!item.satisfied,
-        })),
-      );
+
+      if (saved.checklistState && saved.checklistState.length) {
+        setChecklist(saved.checklistState);
+      } else {
+        const fromAnalysis =
+          saved.analysis.checklist?.map((item) => ({
+            text: item.text,
+            done: !!item.satisfied,
+          })) || [];
+        setChecklist(fromAnalysis);
+      }
     } catch (e) {
       console.error("Failed to load saved analysis", e);
+      setAnalysis(null);
+      setChecklist([]);
+      setCandleEnds({});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
 
-  // When a new analysis arrives, reset checklist if it is empty
-  useEffect(() => {
-    if (analysis?.checklist && checklist.length === 0) {
-      setChecklist(
-        analysis.checklist.map((item) => ({
-          text: item.text,
-          done: !!item.satisfied,
-        })),
+  // Helper to persist checklist changes
+  const persistChecklistState = (next: ChecklistItemState[]) => {
+    try {
+      if (typeof window === "undefined" || !selectedPair) return;
+      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
+      if (!raw) return;
+      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
+      const prev = store[selectedPair];
+      if (!prev) return;
+      store[selectedPair] = { ...prev, checklistState: next };
+      window.localStorage.setItem(
+        ANALYSIS_STORAGE_KEY,
+        JSON.stringify(store),
       );
+    } catch (e) {
+      console.error("Failed to persist checklist", e);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysis]);
+  };
 
   const handlePairsTextChange = (raw: string) => {
     setPairsText(raw);
@@ -307,26 +370,40 @@ export default function HomePage() {
     );
   };
 
+  // Turn uploaded file into ChartImage
+  const addFileAsChartImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      setChartImages((prev) => [
+        ...prev,
+        {
+          id: makeId(),
+          name: file.name || "chart.png",
+          dataUrl,
+        },
+      ]);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const fileList = Array.from(e.target.files);
-    setFiles((prev) => [...prev, ...fileList]);
+    fileList.forEach(addFileAsChartImage);
   };
 
   const handlePasteImages = (newFiles: File[]) => {
-    setFiles((prev) => [...prev, ...newFiles]);
+    newFiles.forEach(addFileAsChartImage);
   };
 
   const handleClearImages = () => {
-    setFiles([]);
-    setAnalysis(null);
-    setChecklist([]);
-    setCandleEnds({});
+    setChartImages([]);
     setError(null);
   };
 
   const handleAnalyze = async () => {
-    if (!files.length) {
+    if (!chartImages.length) {
       setError("Please upload or paste at least one chart screenshot.");
       return;
     }
@@ -341,21 +418,10 @@ export default function HomePage() {
     setChecklist([]);
 
     try {
-      const imagePromises: Promise<UploadImage>[] = files.map(
-        (file, index) =>
-          new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () =>
-              resolve({
-                name: file.name || `pasted-image-${index + 1}`,
-                dataUrl: reader.result as string,
-              });
-            reader.onerror = (err) => reject(err);
-            reader.readAsDataURL(file);
-          }),
-      );
-
-      const images = await Promise.all(imagePromises);
+      const images: UploadImage[] = chartImages.map((img) => ({
+        name: img.name,
+        dataUrl: img.dataUrl,
+      }));
 
       const res = await fetch("/api/analyze-charts", {
         method: "POST",
@@ -382,13 +448,15 @@ export default function HomePage() {
           selectedTimeframes,
         );
         setCandleEnds(newCandleEnds);
-        setAnalysis(data.analysis);
-        setChecklist(
+
+        const newChecklist: ChecklistItemState[] =
           data.analysis.checklist.map((item) => ({
             text: item.text,
             done: !!item.satisfied,
-          })),
-        );
+          }));
+
+        setAnalysis(data.analysis);
+        setChecklist(newChecklist);
 
         // persist per pair
         try {
@@ -403,6 +471,7 @@ export default function HomePage() {
               notes,
               analysis: data.analysis,
               candleEnds: newCandleEnds,
+              checklistState: newChecklist,
               createdAt: now,
             };
             window.localStorage.setItem(
@@ -435,11 +504,13 @@ export default function HomePage() {
       ));
 
   const toggleChecklistItem = (index: number) => {
-    setChecklist((prev) =>
-      prev.map((item, idx) =>
+    setChecklist((prev) => {
+      const next = prev.map((item, idx) =>
         idx === index ? { ...item, done: !item.done } : item,
-      ),
-    );
+      );
+      persistChecklistState(next);
+      return next;
+    });
   };
 
   const completedCount = checklist.filter((c) => c.done).length;
@@ -460,7 +531,7 @@ export default function HomePage() {
                 Trading Companion
               </p>
               <p className="text-[11px] text-zinc-500">
-                Multi-timeframe chart analyzer and playbook builder
+                Multi timeframe chart analyzer and playbook builder
               </p>
             </div>
           </div>
@@ -587,7 +658,7 @@ export default function HomePage() {
           {/* Notes */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <h2 className="mb-1 text-sm font-semibold text-zinc-50">
-              📝 What do you want to know?
+              📝 What do you want to know
             </h2>
             <p className="mb-2 text-[11px] text-zinc-500">
               Optional prompt to steer the analysis.
@@ -612,8 +683,8 @@ export default function HomePage() {
                   Ready to analyze
                 </p>
                 <p className="text-[11px] opacity-80">
-                  {files.length
-                    ? `${files.length} image(s) queued`
+                  {chartImages.length
+                    ? `${chartImages.length} image(s) stored for this pair`
                     : "No charts yet"}
                 </p>
               </div>
@@ -633,7 +704,7 @@ export default function HomePage() {
                 onClick={handleClearImages}
                 className="underline"
               >
-                Clear images
+                Remove screenshots
               </button>
             </div>
             {error && (
@@ -666,9 +737,8 @@ export default function HomePage() {
               )}
             </div>
             <p className="text-[11px] text-zinc-500">
-              Use file upload or paste to add charts. All timeframes are sent
-              together in one run so the AI can see the full story. The latest
-              analysis for each pair is saved even after refresh.
+              Screenshots are stored per pair until you remove them. The latest
+              analysis per pair is also saved so it survives refresh.
             </p>
           </section>
 
@@ -687,7 +757,7 @@ export default function HomePage() {
               />
               <p className="text-[11px] text-zinc-500">
                 You can select multiple images at once such as H4, H1, M15 and
-                M5.
+                M5. They stay attached to this pair until you remove them.
               </p>
             </div>
 
@@ -698,23 +768,31 @@ export default function HomePage() {
               <ClipboardPasteZone onImages={handlePasteImages} />
             </div>
 
-            {files.length > 0 && (
+            {chartImages.length > 0 && (
               <div className="col-span-full mt-2 rounded-lg border border-zinc-800 bg-black/50 p-3 text-[11px] text-zinc-300">
                 <div className="mb-1 flex items-center justify-between">
                   <p className="font-semibold">
-                    Images queued for analysis ({files.length})
+                    Screenshots stored for {selectedPair} (
+                    {chartImages.length})
                   </p>
                   <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
-                    All timeframes analyzed together
+                    Used for every analysis until removed
                   </span>
                 </div>
-                <ul className="max-h-24 space-y-1 overflow-auto">
-                  {files.map((f, idx) => (
-                    <li key={idx} className="truncate">
-                      • {f.name || `pasted-image-${idx + 1}`}
-                    </li>
+                <div className="mt-1 grid max-h-32 grid-cols-3 gap-2 overflow-auto">
+                  {chartImages.map((img) => (
+                    <div
+                      key={img.id}
+                      className="overflow-hidden rounded-md border border-zinc-800 bg-black"
+                    >
+                      <img
+                        src={img.dataUrl}
+                        alt={img.name}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
           </section>
@@ -724,7 +802,7 @@ export default function HomePage() {
             <div className="mb-2 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-50">
-                  3. Multi-timeframe playbook for{" "}
+                  3. Multi timeframe playbook for{" "}
                   <span className="text-emerald-300">{selectedPair}</span>
                 </h2>
                 <p className="text-[11px] text-zinc-500">
@@ -800,7 +878,7 @@ export default function HomePage() {
                         </h3>
                         <p className="text-[11px] text-zinc-500">
                           The AI marks what already looks satisfied. You can
-                          toggle items as you confirm things on your chart.
+                          toggle items as you confirm them on your chart.
                         </p>
                       </div>
                       <div className="text-right text-[11px]">
@@ -850,8 +928,7 @@ export default function HomePage() {
                       <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
                         All checklist items are marked as satisfied. This does
                         not guarantee a winning trade, but it means the setup
-                        matches the model you defined. Always follow your own
-                        risk plan.
+                        matches the model. Always follow your own risk plan.
                       </p>
                     )}
                   </div>
@@ -899,12 +976,12 @@ export default function HomePage() {
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">
-                  Once you add charts and click{" "}
+                  Once you store screenshots and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, you
                   will get a structured playbook here: higher timeframe bias,
                   liquidity story, entry plan, risk, red flags, checklist, and
-                  screenshot overlay ideas. The latest analysis for each pair is
-                  saved so it survives refresh.
+                  screenshot overlay ideas. Everything is saved per pair so you
+                  do not lose it on refresh.
                 </p>
               )}
             </div>
