@@ -844,13 +844,14 @@ export default function HomePage() {
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">
-                  Once you add charts and click{" "}
-                  <span className="font-semibold">Analyze Charts</span>, you'll
-                  get a structured playbook here: HTF bias, liquidity story,
-                  entry plan, risk, red flags, and a checklist you can tick off
-                  before taking any trade. The latest analysis for each pair is
-                  saved so it survives refresh.
-                </p>
+  Once you add charts and click{" "}
+  <span className="font-semibold">Analyze Charts</span>, you will
+  get a structured playbook here: HTF bias, liquidity story,
+  entry plan, risk, red flags, and a checklist you can tick off
+  before taking any trade. The latest analysis for each pair is
+  saved so it survives refresh.
+</p>
+
               )}
             </div>
           </section>
