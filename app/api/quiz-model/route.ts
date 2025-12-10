@@ -1,158 +1,104 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { supabase } from "../../../lib/supabaseClient";
 
-// POST /api/quiz-model
-// Body: { modelId: string }
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+type EntryModel = {
+  id: string;
+  name: string;
+  style: string;
+  timeframe: string;
+  instrument: string;
+  session: string;
+  riskPerTrade: number;
+  description: string;
+  rules: string;
+  checklist: string[];
+  tags: string[];
+
+  sourceVideoUrl?: string;
+  sourceVideoTitle?: string;
+  sourceTimestamps?: string;
+};
+
+type Body = {
+  model: EntryModel;
+};
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { modelId } = body as { modelId?: string };
+    const body = (await request.json()) as Body;
+    const model = body.model;
 
-    if (!modelId) {
-      return NextResponse.json({ error: "Missing modelId" }, { status: 400 });
+    if (!model) {
+      return NextResponse.json({ error: "Model is required." }, { status: 400 });
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: "OPENAI_API_KEY is not set on the server" },
-        { status: 500 }
-      );
-    }
+    const systemPrompt = `You are a strict but helpful trading coach.
+Create quiz questions about an entry model.
+Focus on rules, checklist, risk management, sessions, and invalidation.
+Return 5-8 questions, each with a concise correct answer.`;
 
-    // 1) Load entry model from Supabase
-    const { data: model, error: modelError } = await supabase
-      .from("models")
-      .select("*")
-      .eq("id", modelId)
-      .single();
+    const userPrompt = `Here is the entry model:
 
-    if (modelError || !model) {
-      console.error("Supabase model error:", modelError);
-      return NextResponse.json(
-        { error: "Model not found" },
-        { status: 404 }
-      );
-    }
+Name: ${model.name}
+Style: ${model.style}
+Timeframe: ${model.timeframe}
+Instrument: ${model.instrument}
+Session: ${model.session}
+Risk per trade: ${model.riskPerTrade}%
 
-    // Optional: get project name + a few video titles for extra context
-    const { data: project } = await supabase
-      .from("projects")
-      .select("name")
-      .eq("id", model.project_id)
-      .single();
+Description:
+${model.description}
 
-    const { data: videos } = await supabase
-      .from("videos")
-      .select("title, notes")
-      .eq("project_id", model.project_id)
-      .limit(3);
+Rules:
+${model.rules}
 
-    const context = {
-      projectName: project?.name ?? null,
-      model: {
-        name: model.name,
-        category: model.category,
-        timeframes: model.timeframes,
-        duration: model.duration,
-        description: model.description,
-      },
-      sampleVideos: videos ?? [],
-    };
+Checklist:
+${model.checklist.join("\n")}
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+Tags: ${model.tags.join(", ")}
 
-    const response = await client.responses.create({
-      model: "gpt-4o-mini",
-      input: [
-        {
-          role: "system",
-          content: `
-You are an ICT/SMC trading coach.
+Task:
+Create 5-8 quiz items as JSON, with this exact shape:
+[
+  { "question": "string", "answer": "string" },
+  ...
+]
+Questions should be concrete (e.g. "When do we avoid entering?", "What is max risk per trade?").
+Do NOT add any extra text before or after the JSON.`;
 
-The user will give you ONE entry model (name, category, timeframes, duration, description) plus a few study videos.
-Your job is to create a short QUIZ to test whether they really understand that setup.
-
-Return STRICT JSON ONLY with this shape:
-
-{
-  "questions": [
-    {
-      "question": "Question 1 text here...",
-      "answer": "Ideal answer in 2–6 bullet points or a short paragraph."
-    },
-    {
-      "question": "Question 2 text here...",
-      "answer": "..."
-    }
-  ]
-}
-
-Guidelines:
-- Ask 4–7 questions (5 is ideal).
-- Use ICT/SMC language (liquidity, inducement, FVG, OB, BOS, SSL, BSL, killzones, etc.) when appropriate.
-- Mix:
-  - scenario questions ("Price does X, Y, Z… where is the high-probability entry?")
-  - rule questions ("List the confluences you need before entering.")
-- Focus only on that model, not generic trading psychology or risk advice.
-- The "answer" field should be the *ideal* checklist an experienced trader would give.
-- DO NOT wrap in markdown/backticks. JSON only.
-`,
-        },
-        {
-          role: "user",
-          content:
-            "Here is the entry model and related context as JSON:\n\n" +
-            JSON.stringify(context, null, 2),
-        },
+    const completion = await client.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
-      max_output_tokens: 800,
+      temperature: 0.5,
     });
 
-    const rawText = (response as any).output_text ?? "";
-    let questions: { question: string; answer: string }[] = [];
+    const content = completion.choices[0]?.message?.content ?? "[]";
 
+    let quiz: { question: string; answer: string }[] = [];
     try {
-      const parsed = JSON.parse(rawText);
-
-      if (Array.isArray(parsed)) {
-        questions = parsed as any;
-      } else if (Array.isArray(parsed.questions)) {
-        questions = parsed.questions as any;
-      }
-    } catch (parseErr) {
-      console.error("Failed to parse quiz JSON:", parseErr, rawText);
-      // Fallback: simple generic questions
-      questions = [
+      quiz = JSON.parse(content);
+    } catch (e) {
+      quiz = [
         {
-          question: `Describe the ideal market conditions to use the "${model.name}" setup.`,
-          answer:
-            "Explain higher timeframe bias, required structure (BOS/CHOCH), liquidity conditions and killzone/timing.",
-        },
-        {
-          question: "List your exact entry checklist for this model.",
-          answer:
-            "Write the steps you must see before entering: liquidity grab, FVG/OB location, candle confirmation, etc.",
+          question: "Explain the main idea of this entry model.",
+          answer: content.slice(0, 600),
         },
       ];
     }
 
-    // Basic cleanup
-    questions = questions
-      .filter((q) => q && q.question)
-      .map((q) => ({
-        question: String(q.question).trim(),
-        answer: q.answer ? String(q.answer).trim() : "",
-      }));
-
-    return NextResponse.json({ questions });
+    return NextResponse.json({ quiz });
   } catch (err) {
-    console.error("quiz-model route error:", err);
+    console.error("Quiz error:", err);
     return NextResponse.json(
-      { error: "Unexpected error in quiz-model route" },
-      { status: 500 }
+      { error: "Failed to generate quiz." },
+      { status: 500 },
     );
   }
 }
