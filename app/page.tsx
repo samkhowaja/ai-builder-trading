@@ -22,6 +22,41 @@ type ModelProfile = {
   description: string | null;
 };
 
+type Video = {
+  id: string;
+  project_id: string;
+  title: string;
+  youtube_id: string;
+  url: string;
+  notes: string | null;
+};
+
+// Simple helper to extract YouTube ID from common URL formats
+const extractYouTubeId = (url: string): string | null => {
+  try {
+    const u = new URL(url.trim());
+
+    // Standard watch URL ?v=ID
+    const vParam = u.searchParams.get("v");
+    if (vParam) return vParam;
+
+    // youtu.be/ID
+    if (u.hostname.includes("youtu.be")) {
+      return u.pathname.replace("/", "");
+    }
+
+    // youtube.com/shorts/ID or /live/ID etc.
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && (parts[0] === "shorts" || parts[0] === "live")) {
+      return parts[1];
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+};
+
 export default function Home() {
   // All projects + which one is selected
   const [projects, setProjects] = useState<Project[]>([]);
@@ -36,11 +71,29 @@ export default function Home() {
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
   const [savingModel, setSavingModel] = useState(false);
+
+  // Videos for current project
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(true);
+  const [savingVideo, setSavingVideo] = useState(false);
+
+  // Project saving/deleting state
   const [savingProject, setSavingProject] = useState(false);
 
   // New model form
   const [newModel, setNewModel] = useState<Partial<ModelProfile>>({
     category: "scalping",
+  });
+
+  // New video form
+  const [newVideo, setNewVideo] = useState<{
+    title: string;
+    url: string;
+    notes: string;
+  }>({
+    title: "",
+    url: "",
+    notes: "",
   });
 
   const currentProject =
@@ -74,11 +127,39 @@ export default function Home() {
     setLoadingModels(false);
   };
 
-  // Initial load: projects + models for first project (or create default)
+  // Helper: load videos for a given project
+  const loadVideosForProject = async (projectId: string) => {
+    setLoadingVideos(true);
+    const { data, error } = await supabase
+      .from("videos")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error loading videos:", error);
+      setVideos([]);
+    } else if (data) {
+      setVideos(
+        data.map((row: any) => ({
+          id: row.id,
+          project_id: row.project_id,
+          title: row.title,
+          youtube_id: row.youtube_id,
+          url: row.url,
+          notes: row.notes,
+        }))
+      );
+    }
+    setLoadingVideos(false);
+  };
+
+  // Initial load: projects + models + videos for first project (or create default)
   useEffect(() => {
     const init = async () => {
       try {
         setLoadingModels(true);
+        setLoadingVideos(true);
 
         const { data: projectsData, error: projError } = await supabase
           .from("projects")
@@ -121,8 +202,10 @@ export default function Home() {
         setSourceUrl(current.source_url);
 
         await loadModelsForProject(current.id);
+        await loadVideosForProject(current.id);
       } finally {
         setLoadingModels(false);
+        setLoadingVideos(false);
       }
     };
 
@@ -139,6 +222,7 @@ export default function Home() {
       setSourceUrl(proj.source_url);
     }
     await loadModelsForProject(projectId);
+    await loadVideosForProject(projectId);
   };
 
   // Create a brand new project
@@ -168,7 +252,8 @@ export default function Home() {
     setProjectName(inserted.name);
     setTeacherType(inserted.teacher_type);
     setSourceUrl(inserted.source_url);
-    setModels([]); // new project starts empty
+    setModels([]);
+    setVideos([]);
     setSavingProject(false);
   };
 
@@ -203,7 +288,7 @@ export default function Home() {
     setSavingProject(false);
   };
 
-  // Delete current project (and its models)
+  // Delete current project (and its models + videos)
   const deleteCurrentProject = async () => {
     if (!currentProject) return;
 
@@ -213,28 +298,14 @@ export default function Home() {
     }
 
     const confirmed = confirm(
-      `Delete project "${currentProject.name}" and all its models?`
+      `Delete project "${currentProject.name}" and all its models & videos?`
     );
     if (!confirmed) return;
 
     setSavingProject(true);
 
-    // 1) Delete models for this project
-    const { error: modelsError } = await supabase
-      .from("models")
-      .delete()
-      .eq("project_id", currentProject.id);
-
-    if (modelsError) {
-      alert(
-        "Supabase model delete error:\n" + JSON.stringify(modelsError, null, 2)
-      );
-      console.error("Error deleting models for project:", modelsError);
-      setSavingProject(false);
-      return;
-    }
-
-    // 2) Delete the project
+    // Models & videos will be deleted via foreign keys if you've set them up,
+    // but we already ensured models delete earlier; videos table has ON DELETE CASCADE too.
     const { error: projError } = await supabase
       .from("projects")
       .delete()
@@ -249,11 +320,9 @@ export default function Home() {
       return;
     }
 
-    // 3) Update local state
     const remaining = projects.filter((p) => p.id !== currentProject.id);
     setProjects(remaining);
 
-    // Choose a new current project (first remaining)
     const next = remaining[0] || null;
     if (next) {
       setCurrentProjectId(next.id);
@@ -261,13 +330,14 @@ export default function Home() {
       setTeacherType(next.teacher_type);
       setSourceUrl(next.source_url);
       await loadModelsForProject(next.id);
+      await loadVideosForProject(next.id);
     } else {
-      // Shouldn't happen because we block deleting last project, but just in case
       setCurrentProjectId(null);
       setProjectName("");
       setTeacherType("channel");
       setSourceUrl("");
       setModels([]);
+      setVideos([]);
     }
 
     setSavingProject(false);
@@ -331,6 +401,71 @@ export default function Home() {
     setModels((prev) => prev.filter((m) => m.id !== id));
   };
 
+  const addVideo = async () => {
+    if (!currentProject) {
+      alert("Project not loaded yet. Please wait a moment and try again.");
+      return;
+    }
+
+    if (!newVideo.title.trim() || !newVideo.url.trim()) {
+      alert("Please fill in title and video URL.");
+      return;
+    }
+
+    const youtubeId = extractYouTubeId(newVideo.url);
+    if (!youtubeId) {
+      alert("Could not detect YouTube video ID. Please check the URL.");
+      return;
+    }
+
+    setSavingVideo(true);
+
+    const { data, error } = await supabase
+      .from("videos")
+      .insert({
+        project_id: currentProject.id,
+        title: newVideo.title.trim(),
+        youtube_id: youtubeId,
+        url: newVideo.url.trim(),
+        notes: newVideo.notes.trim() || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      alert("Supabase video insert error:\n" + JSON.stringify(error, null, 2));
+      console.error("Error saving video:", error);
+    } else if (data) {
+      const saved: Video = {
+        id: data.id,
+        project_id: data.project_id,
+        title: data.title,
+        youtube_id: data.youtube_id,
+        url: data.url,
+        notes: data.notes,
+      };
+      setVideos((prev) => [saved, ...prev]);
+      setNewVideo({ title: "", url: "", notes: "" });
+    }
+
+    setSavingVideo(false);
+  };
+
+  const deleteVideo = async (id: string) => {
+    const confirmed = confirm("Delete this video from the project?");
+    if (!confirmed) return;
+
+    const { error } = await supabase.from("videos").delete().eq("id", id);
+
+    if (error) {
+      alert("Supabase video delete error:\n" + JSON.stringify(error, null, 2));
+      console.error("Error deleting video:", error);
+      return;
+    }
+
+    setVideos((prev) => prev.filter((v) => v.id !== id));
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
       <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
@@ -340,7 +475,7 @@ export default function Home() {
             AI Builder – Entry Model Lab
           </h1>
           <span className="text-xs sm:text-sm text-slate-400">
-            v0.4 – Multi-projects + Supabase
+            v0.5 – Projects + Models + Videos
           </span>
         </header>
 
@@ -372,7 +507,7 @@ export default function Home() {
               </button>
               <button
                 onClick={deleteCurrentProject}
-                disabled={savingProject || !currentProject}
+                disabled={savingProject || !currentProject || projects.length <= 1}
                 className="rounded-xl border border-red-500/70 px-3 py-2 text-xs text-red-300 bg-slate-950 hover:bg-red-500/10 transition disabled:opacity-40"
               >
                 Delete project
@@ -613,9 +748,122 @@ export default function Home() {
           </div>
         </section>
 
+        {/* Videos for this project */}
+        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <h2 className="text-lg font-semibold">Videos for this project</h2>
+            <span className="text-xs text-slate-400">
+              Attach Waqar&apos;s videos (or other mentors) to this project.
+            </span>
+          </div>
+
+          <div className="grid md:grid-cols-[2fr,1.3fr] gap-4">
+            {/* Existing videos list */}
+            <div className="space-y-3">
+              {loadingVideos ? (
+                <p className="text-xs text-slate-400">Loading videos...</p>
+              ) : videos.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  No videos yet for this project. Add one on the right.
+                </p>
+              ) : (
+                videos.map((v) => (
+                  <div
+                    key={v.id}
+                    className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-medium text-sm sm:text-base">
+                        {v.title}
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={v.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] px-2 py-1 rounded-full border border-emerald-500/70 text-emerald-300 hover:bg-emerald-500/10 transition"
+                        >
+                          Open on YouTube
+                        </a>
+                        <button
+                          onClick={() => deleteVideo(v.id)}
+                          className="text-[10px] px-2 py-1 rounded-full border border-red-500/60 text-red-300 hover:bg-red-500/10 transition"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      Video ID: {v.youtube_id}
+                    </p>
+                    {v.notes && (
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        {v.notes}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Add new video form */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-3">
+              <h3 className="font-medium text-sm sm:text-base">
+                Add new video
+              </h3>
+
+              <div className="space-y-2">
+                <label className="text-xs text-slate-300">Title</label>
+                <input
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="e.g. EURUSD London killzone entries"
+                  value={newVideo.title}
+                  onChange={(e) =>
+                    setNewVideo((prev) => ({ ...prev, title: e.target.value }))
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-slate-300">YouTube URL</label>
+                <input
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={newVideo.url}
+                  onChange={(e) =>
+                    setNewVideo((prev) => ({ ...prev, url: e.target.value }))
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-slate-300">
+                  Notes (optional) – what you want to learn from this video
+                </label>
+                <textarea
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500 min-h-[70px]"
+                  placeholder="e.g. Focus on how he builds the bias on H4/H1 and where he actually enters."
+                  value={newVideo.notes}
+                  onChange={(e) =>
+                    setNewVideo((prev) => ({ ...prev, notes: e.target.value }))
+                  }
+                />
+              </div>
+
+              <button
+                onClick={addVideo}
+                disabled={savingVideo || !currentProject}
+                className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {savingVideo ? "Saving..." : "Add video"}
+              </button>
+            </div>
+          </div>
+        </section>
+
         <footer className="text-xs text-slate-500 text-center pb-4">
-          Next steps: add a videos table + connect YouTube data into each
-          project.
+          Next steps: connect YouTube API to auto-import videos and later link
+          specific clips to each entry model.
         </footer>
       </div>
     </main>
