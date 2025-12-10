@@ -43,15 +43,15 @@ Given a YouTube video URL that likely teaches a trading strategy,
 invent ONE realistic "entry model" a student could practice.
 
 - Assume the video is about smart money, liquidity, FVG, order blocks, etc.
-- Output a STRICT JSON object for a single entry model.
-- Keep it realistic and consistent.`;
+- You MUST output a single JSON object matching the required shape.
+- Do not include explanations, markdown, or any other text outside the JSON.`;
 
     const userPrompt = `YouTube video URL:
 ${videoUrl}
 
 Task:
 1) Imagine this video teaches one main entry model (for Forex or indices).
-2) Extract and define that entry model in a structured JSON object with this exact shape:
+2) Define that entry model in a structured JSON object with this exact shape:
 
 {
   "name": "short model name",
@@ -71,10 +71,11 @@ Task:
   "sourceTimestamps": ""
 }
 
-3) RETURN ONLY the JSON object. No explanation, no extra text.`;
+3) Return ONLY that JSON object.`;
 
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
+      response_format: { type: "json_object" }, // 👈 force valid JSON
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -95,10 +96,15 @@ Task:
       );
     }
 
+    // Attach the URL so you always know where it came from
     model.sourceVideoUrl = videoUrl;
 
+    // Safety defaults
     if (!Array.isArray(model.checklist)) model.checklist = [];
     if (!Array.isArray(model.tags)) model.tags = [];
+    if (typeof model.riskPerTrade !== "number") {
+      model.riskPerTrade = 1;
+    }
 
     return NextResponse.json({ model });
   } catch (err) {
