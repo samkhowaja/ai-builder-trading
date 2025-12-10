@@ -8,7 +8,7 @@ const client = new OpenAI({
 
 type UploadImage = {
   name: string;
-  dataUrl: string;
+  dataUrl: string; // data:image/png;base64,....
 };
 
 type Body = {
@@ -23,10 +23,10 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Body;
     const { pair, timeframes, notes, images } = body;
 
-    if (!pair || !images || !images.length) {
+    if (!pair || !images || images.length === 0) {
       return NextResponse.json(
         { error: "pair and at least one image are required." },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
@@ -58,13 +58,15 @@ Your job:
 Keep it beginner-friendly, but still technically correct.
 Do NOT guess exact prices; speak in terms of structure and behaviour.`;
 
+    // Build multimodal content: text + multiple images
     const content: any[] = [{ type: "text", text: userText }];
 
     for (const img of images) {
       content.push({
-        type: "input_image",
+        type: "image_url", // 👈 this was the bug; must be image_url
         image_url: { url: img.dataUrl },
       });
+      // Tiny tag so the model knows which file it just saw
       content.push({
         type: "text",
         text: `Above image file name: ${img.name}`,
@@ -72,10 +74,16 @@ Do NOT guess exact prices; speak in terms of structure and behaviour.`;
     }
 
     const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-4o-mini", // good cheap vision model
       messages: [
-        { role: "system", content: "You are a precise, honest trading assistant." },
-        { role: "user", content },
+        {
+          role: "system",
+          content: "You are a precise, honest trading assistant.",
+        },
+        {
+          role: "user",
+          content,
+        },
       ],
       temperature: 0.6,
     });
@@ -85,11 +93,15 @@ Do NOT guess exact prices; speak in terms of structure and behaviour.`;
       "No analysis was generated.";
 
     return NextResponse.json({ analysis });
-  } catch (err) {
+  } catch (err: any) {
     console.error("analyze-charts error:", err);
-    return NextResponse.json(
-      { error: "Failed to analyze charts." },
-      { status: 500 },
-    );
+
+    // Try to surface OpenAI's error message if available
+    const message =
+      err?.response?.data?.error?.message ||
+      err?.message ||
+      "Failed to analyze charts.";
+
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
