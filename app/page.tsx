@@ -23,30 +23,64 @@ type ModelProfile = {
 };
 
 export default function Home() {
-  const [project, setProject] = useState<Project | null>(null);
+  // All projects + which one is selected
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
-  const [projectName, setProjectName] = useState(
-    "Waqar Asim EURUSD Entry Models"
-  );
+  // Form fields for the currently selected project
+  const [projectName, setProjectName] = useState("");
   const [teacherType, setTeacherType] = useState<TeacherType>("channel");
-  const [sourceUrl, setSourceUrl] = useState("https://youtube.com/@waqarasim");
+  const [sourceUrl, setSourceUrl] = useState("");
 
+  // Models for current project
   const [models, setModels] = useState<ModelProfile[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
   const [savingModel, setSavingModel] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
 
+  // New model form
   const [newModel, setNewModel] = useState<Partial<ModelProfile>>({
     category: "scalping",
   });
 
-  // Load project + models on first render
+  const currentProject =
+    projects.find((p) => p.id === currentProjectId) || null;
+
+  // Helper: load models for a given project
+  const loadModelsForProject = async (projectId: string) => {
+    setLoadingModels(true);
+    const { data, error } = await supabase
+      .from("models")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error loading models:", error);
+      setModels([]);
+    } else if (data) {
+      setModels(
+        data.map((row: any) => ({
+          id: row.id,
+          project_id: row.project_id,
+          name: row.name,
+          category: row.category,
+          timeframes: row.timeframes,
+          duration: row.duration,
+          description: row.description,
+        }))
+      );
+    }
+    setLoadingModels(false);
+  };
+
+  // Initial load: projects + models for first project (or create default)
   useEffect(() => {
     const init = async () => {
       try {
         setLoadingModels(true);
 
-        // 1) Load existing projects
-        const { data: projects, error: projError } = await supabase
+        const { data: projectsData, error: projError } = await supabase
           .from("projects")
           .select("*")
           .order("created_at", { ascending: true });
@@ -56,17 +90,17 @@ export default function Home() {
           return;
         }
 
-        let currentProject: Project | null =
-          (projects && projects[0]) || null;
+        let list: Project[] = (projectsData as Project[]) || [];
+        let current: Project | null = list[0] || null;
 
-        // 2) If no project exists, create one using current UI defaults
-        if (!currentProject) {
+        // If no project exists, create the default Waqar one
+        if (!current) {
           const { data: inserted, error: insertError } = await supabase
             .from("projects")
             .insert({
-              name: projectName,
-              teacher_type: teacherType,
-              source_url: sourceUrl,
+              name: "Waqar Asim EURUSD Entry Models",
+              teacher_type: "channel",
+              source_url: "https://youtube.com/@waqarasim",
             })
             .select()
             .single();
@@ -76,48 +110,101 @@ export default function Home() {
             return;
           }
 
-          currentProject = inserted as Project;
+          current = inserted as Project;
+          list = [current];
         }
 
-        setProject(currentProject);
-        setProjectName(currentProject.name);
-        setTeacherType(currentProject.teacher_type);
-        setSourceUrl(currentProject.source_url);
+        setProjects(list);
+        setCurrentProjectId(current.id);
+        setProjectName(current.name);
+        setTeacherType(current.teacher_type);
+        setSourceUrl(current.source_url);
 
-        // 3) Load models for this project
-        const { data: modelsData, error: modelsError } = await supabase
-          .from("models")
-          .select("*")
-          .eq("project_id", currentProject.id)
-          .order("created_at", { ascending: false });
-
-        if (modelsError) {
-          console.error("Error loading models:", modelsError);
-          setModels([]);
-        } else if (modelsData) {
-          setModels(
-            modelsData.map((row: any) => ({
-              id: row.id,
-              project_id: row.project_id,
-              name: row.name,
-              category: row.category,
-              timeframes: row.timeframes,
-              duration: row.duration,
-              description: row.description,
-            }))
-          );
-        }
+        await loadModelsForProject(current.id);
       } finally {
         setLoadingModels(false);
       }
     };
 
     init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Change selected project
+  const handleProjectChange = async (projectId: string) => {
+    setCurrentProjectId(projectId);
+    const proj = projects.find((p) => p.id === projectId);
+    if (proj) {
+      setProjectName(proj.name);
+      setTeacherType(proj.teacher_type);
+      setSourceUrl(proj.source_url);
+    }
+    await loadModelsForProject(projectId);
+  };
+
+  // Create a brand new project
+  const createProject = async () => {
+    setSavingProject(true);
+    const defaultName = `New Project ${projects.length + 1}`;
+    const { data, error } = await supabase
+      .from("projects")
+      .insert({
+        name: defaultName,
+        teacher_type: "channel",
+        source_url: "",
+      })
+      .select()
+      .single();
+
+    if (error) {
+      alert("Supabase project insert error:\n" + JSON.stringify(error, null, 2));
+      console.error("Error creating project:", error);
+      setSavingProject(false);
+      return;
+    }
+
+    const inserted = data as Project;
+    setProjects((prev) => [...prev, inserted]);
+    setCurrentProjectId(inserted.id);
+    setProjectName(inserted.name);
+    setTeacherType(inserted.teacher_type);
+    setSourceUrl(inserted.source_url);
+    setModels([]); // new project starts empty
+    setSavingProject(false);
+  };
+
+  // Save current project details
+  const saveProjectDetails = async () => {
+    if (!currentProject) return;
+
+    setSavingProject(true);
+
+    const { data, error } = await supabase
+      .from("projects")
+      .update({
+        name: projectName,
+        teacher_type: teacherType,
+        source_url: sourceUrl,
+      })
+      .eq("id", currentProject.id)
+      .select()
+      .single();
+
+    if (error) {
+      alert("Supabase project update error:\n" + JSON.stringify(error, null, 2));
+      console.error("Error updating project:", error);
+      setSavingProject(false);
+      return;
+    }
+
+    const updated = data as Project;
+    setProjects((prev) =>
+      prev.map((p) => (p.id === updated.id ? updated : p))
+    );
+    setSavingProject(false);
+  };
+
   const addModel = async () => {
-    if (!project) {
+    if (!currentProject) {
       alert("Project not loaded yet. Please wait a moment and try again.");
       return;
     }
@@ -129,7 +216,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("models")
       .insert({
-        project_id: project.id,
+        project_id: currentProject.id,
         name: newModel.name,
         category: newModel.category || "scalping",
         timeframes: newModel.timeframes,
@@ -183,13 +270,38 @@ export default function Home() {
             AI Builder – Entry Model Lab
           </h1>
           <span className="text-xs sm:text-sm text-slate-400">
-            v0.3 – Projects + Supabase
+            v0.4 – Multi-projects + Supabase
           </span>
         </header>
 
         {/* Project & Teacher */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
-          <h2 className="text-lg font-semibold mb-1">Project &amp; Teacher</h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="text-lg font-semibold mb-1">Project &amp; Teacher</h2>
+
+            {/* Project selector */}
+            <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm">
+              <span className="text-slate-400">Current project:</span>
+              <select
+                className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                value={currentProjectId || ""}
+                onChange={(e) => handleProjectChange(e.target.value)}
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={createProject}
+                disabled={savingProject}
+                className="rounded-xl border border-slate-700 px-3 py-2 text-xs bg-slate-950 hover:bg-slate-800 transition disabled:opacity-60"
+              >
+                {savingProject ? "Creating..." : "New project"}
+              </button>
+            </div>
+          </div>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
@@ -251,10 +363,15 @@ export default function Home() {
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
             />
-            <p className="text-xs text-slate-500">
-              Currently project details are not persisted when you edit them
-              here; we&apos;ll wire that up later.
-            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={saveProjectDetails}
+                disabled={savingProject || !currentProject}
+                className="mt-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {savingProject ? "Saving..." : "Save project"}
+              </button>
+            </div>
           </div>
         </section>
 
@@ -263,7 +380,7 @@ export default function Home() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <h2 className="text-lg font-semibold">Model Profiles</h2>
             <span className="text-xs text-slate-400">
-              Project: {project ? project.name : "Loading..."}
+              Project: {currentProject ? currentProject.name : "Loading..."}
             </span>
           </div>
 
@@ -410,7 +527,7 @@ export default function Home() {
 
               <button
                 onClick={addModel}
-                disabled={savingModel}
+                disabled={savingModel || !currentProject}
                 className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {savingModel ? "Saving..." : "Add model"}
@@ -420,7 +537,8 @@ export default function Home() {
         </section>
 
         <footer className="text-xs text-slate-500 text-center pb-4">
-          Next steps: multi-project selector + YouTube ingestion.
+          Next steps: add a videos table + connect YouTube data into each
+          project.
         </footer>
       </div>
     </main>
