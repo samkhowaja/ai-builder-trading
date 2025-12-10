@@ -3,8 +3,18 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
+type TeacherType = "channel" | "playlist" | "video";
+
+type Project = {
+  id: string;
+  name: string;
+  teacher_type: TeacherType;
+  source_url: string;
+};
+
 type ModelProfile = {
   id: string;
+  project_id: string;
   name: string;
   category: "swing" | "intraday" | "scalping";
   timeframes: string;
@@ -13,12 +23,12 @@ type ModelProfile = {
 };
 
 export default function Home() {
+  const [project, setProject] = useState<Project | null>(null);
+
   const [projectName, setProjectName] = useState(
     "Waqar Asim EURUSD Entry Models"
   );
-  const [teacherType, setTeacherType] = useState<
-    "channel" | "playlist" | "video"
-  >("channel");
+  const [teacherType, setTeacherType] = useState<TeacherType>("channel");
   const [sourceUrl, setSourceUrl] = useState("https://youtube.com/@waqarasim");
 
   const [models, setModels] = useState<ModelProfile[]>([]);
@@ -29,36 +39,89 @@ export default function Home() {
     category: "scalping",
   });
 
-  // Load models from Supabase on first render
+  // Load project + models on first render
   useEffect(() => {
-    const loadModels = async () => {
-      setLoadingModels(true);
-      const { data, error } = await supabase
-        .from("models")
-        .select("*")
-        .order("created_at", { ascending: false });
+    const init = async () => {
+      try {
+        setLoadingModels(true);
 
-      if (error) {
-        console.error("Error loading models:", error);
-      } else if (data) {
-        setModels(
-          data.map((row: any) => ({
-            id: row.id,
-            name: row.name,
-            category: row.category,
-            timeframes: row.timeframes,
-            duration: row.duration,
-            description: row.description,
-          }))
-        );
+        // 1) Load existing projects
+        const { data: projects, error: projError } = await supabase
+          .from("projects")
+          .select("*")
+          .order("created_at", { ascending: true });
+
+        if (projError) {
+          console.error("Error loading projects:", projError);
+          return;
+        }
+
+        let currentProject: Project | null =
+          (projects && projects[0]) || null;
+
+        // 2) If no project exists, create one using current UI defaults
+        if (!currentProject) {
+          const { data: inserted, error: insertError } = await supabase
+            .from("projects")
+            .insert({
+              name: projectName,
+              teacher_type: teacherType,
+              source_url: sourceUrl,
+            })
+            .select()
+            .single();
+
+          if (insertError) {
+            console.error("Error creating default project:", insertError);
+            return;
+          }
+
+          currentProject = inserted as Project;
+        }
+
+        setProject(currentProject);
+        setProjectName(currentProject.name);
+        setTeacherType(currentProject.teacher_type);
+        setSourceUrl(currentProject.source_url);
+
+        // 3) Load models for this project
+        const { data: modelsData, error: modelsError } = await supabase
+          .from("models")
+          .select("*")
+          .eq("project_id", currentProject.id)
+          .order("created_at", { ascending: false });
+
+        if (modelsError) {
+          console.error("Error loading models:", modelsError);
+          setModels([]);
+        } else if (modelsData) {
+          setModels(
+            modelsData.map((row: any) => ({
+              id: row.id,
+              project_id: row.project_id,
+              name: row.name,
+              category: row.category,
+              timeframes: row.timeframes,
+              duration: row.duration,
+              description: row.description,
+            }))
+          );
+        }
+      } finally {
+        setLoadingModels(false);
       }
-      setLoadingModels(false);
     };
 
-    loadModels();
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addModel = async () => {
+    if (!project) {
+      alert("Project not loaded yet. Please wait a moment and try again.");
+      return;
+    }
+
     if (!newModel.name || !newModel.timeframes || !newModel.duration) return;
 
     setSavingModel(true);
@@ -66,6 +129,7 @@ export default function Home() {
     const { data, error } = await supabase
       .from("models")
       .insert({
+        project_id: project.id,
         name: newModel.name,
         category: newModel.category || "scalping",
         timeframes: newModel.timeframes,
@@ -81,6 +145,7 @@ export default function Home() {
     } else if (data) {
       const saved: ModelProfile = {
         id: data.id,
+        project_id: data.project_id,
         name: data.name,
         category: data.category,
         timeframes: data.timeframes,
@@ -118,7 +183,7 @@ export default function Home() {
             AI Builder – Entry Model Lab
           </h1>
           <span className="text-xs sm:text-sm text-slate-400">
-            v0.2 – Supabase connected
+            v0.3 – Projects + Supabase
           </span>
         </header>
 
@@ -187,8 +252,8 @@ export default function Home() {
               onChange={(e) => setSourceUrl(e.target.value)}
             />
             <p className="text-xs text-slate-500">
-              Later we&apos;ll connect this to YouTube API to fetch videos and
-              detect entry models automatically.
+              Currently project details are not persisted when you edit them
+              here; we&apos;ll wire that up later.
             </p>
           </div>
         </section>
@@ -198,7 +263,7 @@ export default function Home() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <h2 className="text-lg font-semibold">Model Profiles</h2>
             <span className="text-xs text-slate-400">
-              Stored in Supabase (shared across devices)
+              Project: {project ? project.name : "Loading..."}
             </span>
           </div>
 
@@ -209,7 +274,7 @@ export default function Home() {
                 <p className="text-xs text-slate-400">Loading models...</p>
               ) : models.length === 0 ? (
                 <p className="text-xs text-slate-400">
-                  No models yet. Add one on the right.
+                  No models yet for this project. Add one on the right.
                 </p>
               ) : (
                 models.map((m) => (
@@ -355,7 +420,7 @@ export default function Home() {
         </section>
 
         <footer className="text-xs text-slate-500 text-center pb-4">
-          Next steps: add projects table + YouTube ingestion.
+          Next steps: multi-project selector + YouTube ingestion.
         </footer>
       </div>
     </main>
