@@ -834,10 +834,10 @@ export default function HomePage() {
 
                     {allDone && (
                       <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
-                        All checklist items are marked as satisfied. That doesn’t
-                        guarantee a winning trade, but it means the setup matches
-                        the conditions you defined. Always follow your own risk
-                        plan.
+                        All checklist items are marked as satisfied. That does
+                        not guarantee a winning trade, but it means the setup
+                        matches the conditions you defined. Always follow your
+                        own risk plan.
                       </p>
                     )}
                   </div>
