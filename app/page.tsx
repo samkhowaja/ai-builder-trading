@@ -1,7 +1,7 @@
 // app/page.tsx
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 
 type AnalyzeResponse = {
   analysis: string;
@@ -12,11 +12,83 @@ type UploadImage = {
   dataUrl: string;
 };
 
+type ClipboardImage = {
+  file: File;
+  previewUrl: string;
+};
+
 const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
 
 const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
-
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
+/** Small component that accepts image paste from clipboard */
+function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
+  const [images, setImages] = useState<ClipboardImage[]>([]);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const items = e.clipboardData.items;
+      const newFiles: File[] = [];
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            const previewUrl = URL.createObjectURL(file);
+            newFiles.push(file);
+            setImages((prev) => [...prev, { file, previewUrl }]);
+          }
+        }
+      }
+
+      if (newFiles.length && props.onImages) {
+        props.onImages(newFiles);
+      }
+    },
+    [props],
+  );
+
+  return (
+    <div
+      onPaste={handlePaste}
+      tabIndex={0}
+      className="rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 p-4 text-xs text-zinc-400 focus:outline-none"
+    >
+      <p className="mb-2">
+        📸{" "}
+        <span className="font-semibold text-zinc-100">
+          Paste screenshots from clipboard
+        </span>{" "}
+        (Ctrl+V / Cmd+V) while this box is focused.
+      </p>
+
+      {images.length === 0 ? (
+        <p className="text-[11px] text-zinc-500">
+          In TradingView: take a screenshot (copy to clipboard), click in this
+          box, then press <kbd>Ctrl</kbd>+<kbd>V</kbd>. Pasted images will be
+          added to the analysis along with any uploaded files.
+        </p>
+      ) : (
+        <div className="mt-2 grid max-h-48 grid-cols-2 gap-2 overflow-auto">
+          {images.map((img, i) => (
+            <div
+              key={i}
+              className="overflow-hidden rounded-md border border-zinc-800"
+            >
+              <img
+                src={img.previewUrl}
+                alt={`pasted-${i}`}
+                className="h-full w-full object-cover"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function HomePage() {
   const [pairs, setPairs] = useState<string[]>([]);
@@ -57,7 +129,7 @@ export default function HomePage() {
     }
   }, []);
 
-  // Keep textarea in sync with pairs
+  // Sync pairs textarea
   useEffect(() => {
     setPairsText(pairs.join("\n"));
   }, [pairs]);
@@ -95,12 +167,16 @@ export default function HomePage() {
   const handleFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const fileList = Array.from(e.target.files);
-    setFiles(fileList);
+    setFiles((prev) => [...prev, ...fileList]);
+  };
+
+  const handlePasteImages = (newFiles: File[]) => {
+    setFiles((prev) => [...prev, ...newFiles]);
   };
 
   const handleAnalyze = async () => {
     if (!files.length) {
-      setError("Please upload at least one chart screenshot.");
+      setError("Please upload or paste at least one chart screenshot.");
       return;
     }
     if (!selectedPair) {
@@ -170,7 +246,7 @@ export default function HomePage() {
     <div className="min-h-screen bg-black text-zinc-100">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 md:flex-row">
         {/* LEFT SIDEBAR */}
-        <aside className="w-full md:w-72 space-y-4">
+        <aside className="w-full space-y-4 md:w-72">
           {/* My Trading Pairs */}
           <section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-xs">
             <h2 className="mb-2 text-sm font-semibold text-zinc-100">
@@ -209,13 +285,13 @@ export default function HomePage() {
             </label>
           </section>
 
-          {/* Quick Help / Navigation */}
+          {/* Info / link to builder */}
           <section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-[11px] text-zinc-300">
             <h2 className="mb-2 text-sm font-semibold text-zinc-100">
               📚 Learning Page
             </h2>
             <p className="mb-2">
-              This home page is your{" "}
+              This page is your{" "}
               <span className="font-semibold">Chart Analyzer</span>.
             </p>
             <p>
@@ -233,15 +309,16 @@ export default function HomePage() {
 
         {/* MAIN CONTENT */}
         <main className="flex-1 space-y-4">
-          {/* Hero / Explanation */}
+          {/* Hero */}
           <header className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
             <h1 className="text-xl font-semibold tracking-tight text-zinc-50">
               🧠 AI Chart Analyzer
             </h1>
             <p className="mt-2 text-sm text-zinc-400">
-              Upload screenshots from multiple timeframes (H4, H1, M15, M5,
-              etc.) for <span className="font-semibold">{selectedPair}</span>.
-              The AI will analyze <span className="italic">all of them together</span>{" "}
+              Upload or paste screenshots from multiple timeframes (H4, H1,
+              M15, M5, etc.) for{" "}
+              <span className="font-semibold">{selectedPair}</span>. The AI
+              will analyze <span className="italic">all of them together</span>{" "}
               so it sees the full story from higher timeframe to execution.
             </p>
             <p className="mt-1 text-xs text-zinc-500">
@@ -251,12 +328,12 @@ export default function HomePage() {
             </p>
           </header>
 
-          {/* Upload + options */}
-          <section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-4">
-            {/* Timeframe selectors */}
+          {/* Options + upload */}
+          <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
+            {/* Timeframes */}
             <div>
               <h2 className="mb-2 text-sm font-semibold text-zinc-100">
-                1. Select timeframes you uploaded
+                1. Select timeframes you captured
               </h2>
               <div className="flex flex-wrap gap-2 text-xs">
                 {allTimeframes.map((tf) => {
@@ -279,14 +356,14 @@ export default function HomePage() {
               </div>
               <p className="mt-1 text-[11px] text-zinc-500">
                 This just tells the AI what kind of structure to expect; you
-                still upload the actual screenshots below.
+                still upload or paste the actual screenshots below.
               </p>
             </div>
 
             {/* File upload */}
             <div>
               <h2 className="mb-2 text-sm font-semibold text-zinc-100">
-                2. Upload chart screenshots
+                2. Upload chart screenshots (optional)
               </h2>
               <input
                 type="file"
@@ -297,29 +374,37 @@ export default function HomePage() {
               />
               <p className="mt-1 text-[11px] text-zinc-500">
                 You can select multiple images at once (e.g. H4, H1, M15, M5).
-                They will all be analyzed in one go.
               </p>
-
-              {files.length > 0 && (
-                <div className="mt-2 rounded-md border border-zinc-800 bg-black/40 p-2 text-[11px] text-zinc-300">
-                  <p className="mb-1 font-semibold">
-                    Selected images ({files.length}):
-                  </p>
-                  <ul className="max-h-24 space-y-1 overflow-auto">
-                    {files.map((f) => (
-                      <li key={f.name} className="truncate">
-                        • {f.name}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
             </div>
+
+            {/* Clipboard paste zone */}
+            <div>
+              <h2 className="mb-2 text-sm font-semibold text-zinc-100">
+                3. Or paste screenshots from clipboard
+              </h2>
+              <ClipboardPasteZone onImages={handlePasteImages} />
+            </div>
+
+            {/* Show list of all images that will be analyzed */}
+            {files.length > 0 && (
+              <div className="rounded-md border border-zinc-800 bg-black/40 p-2 text-[11px] text-zinc-300">
+                <p className="mb-1 font-semibold">
+                  Images to analyze ({files.length}):
+                </p>
+                <ul className="max-h-24 space-y-1 overflow-auto">
+                  {files.map((f, idx) => (
+                    <li key={idx} className="truncate">
+                      • {f.name || `pasted-image-${idx + 1}`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* Notes */}
             <div>
               <h2 className="mb-2 text-sm font-semibold text-zinc-100">
-                3. Extra notes / question (optional)
+                4. Extra notes / question (optional)
               </h2>
               <textarea
                 className="h-20 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs text-zinc-100 outline-none"
@@ -355,17 +440,17 @@ export default function HomePage() {
           {/* Analysis output */}
           <section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
             <h2 className="mb-2 text-sm font-semibold text-zinc-100">
-              4. Analysis
+              5. Analysis
             </h2>
             <div className="max-h-[400px] overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3">
               {analysis ? (
                 <div>{renderAnalysisParagraphs(analysis)}</div>
               ) : (
                 <p className="text-xs text-zinc-500">
-                  Once you upload charts and click{" "}
+                  Once you upload or paste charts and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, the
-                  breakdown will appear here: bias, liquidity story, key levels,
-                  and a possible entry idea.
+                  breakdown will appear here: bias, liquidity story, key
+                  levels, and a possible entry idea.
                 </p>
               )}
             </div>

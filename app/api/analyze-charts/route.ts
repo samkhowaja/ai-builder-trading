@@ -30,19 +30,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const tfText = timeframes && timeframes.length
-      ? timeframes.join(", ")
-      : "unknown timeframes";
+    const tfText =
+      timeframes && timeframes.length ? timeframes.join(", ") : "unknown";
 
     const userText = `
 You are an experienced ICT / Smart Money trader and teacher.
 
 You are analyzing chart screenshots for ${pair}.
 The user has uploaded multiple images that (most likely) correspond to these timeframes: ${tfText}.
-
-Some rules:
-- Assume higher timeframes (like H4, H1) show structure and liquidity.
-- Lower timeframes (like M15, M5, M1) show entry refinement.
 
 User notes (if any):
 ${notes || "No extra notes."}
@@ -63,19 +58,13 @@ Your job:
 Keep it beginner-friendly, but still technically correct.
 Do NOT guess exact prices; speak in terms of structure and behaviour.`;
 
-    // Build content for multi-image vision request
-    const content: any[] = [
-      { type: "text", text: userText },
-    ];
+    const content: any[] = [{ type: "text", text: userText }];
 
     for (const img of images) {
       content.push({
         type: "input_image",
-        image_url: {
-          url: img.dataUrl,
-        },
+        image_url: { url: img.dataUrl },
       });
-      // also add a tiny text tag so the model knows which file it saw
       content.push({
         type: "text",
         text: `Above image file name: ${img.name}`,
@@ -86,10 +75,7 @@ Do NOT guess exact prices; speak in terms of structure and behaviour.`;
       model: "gpt-4.1-mini",
       messages: [
         { role: "system", content: "You are a precise, honest trading assistant." },
-        {
-          role: "user",
-          content,
-        },
+        { role: "user", content },
       ],
       temperature: 0.6,
     });
