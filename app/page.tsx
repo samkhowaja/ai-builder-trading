@@ -33,10 +33,59 @@ type ChecklistItemState = {
   done: boolean;
 };
 
+type SavedAnalysis = {
+  pair: string;
+  timeframes: string[];
+  notes: string;
+  analysis: ChartAnalysis;
+  candleEnds: Record<string, number>;
+  createdAt: number;
+};
+
 const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
+const ANALYSIS_STORAGE_KEY = "ai-builder-chart-analysis-v1";
 
 const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
+const TF_MINUTES: Record<string, number> = {
+  M1: 1,
+  M5: 5,
+  M15: 15,
+  M30: 30,
+  H1: 60,
+  H4: 240,
+  D1: 1440,
+};
+
+function computeCandleEndsForSelected(
+  nowTs: number,
+  timeframes: string[],
+): Record<string, number> {
+  const res: Record<string, number> = {};
+  for (const tf of timeframes) {
+    const mins = TF_MINUTES[tf];
+    if (!mins) continue;
+    const tfMs = mins * 60_000;
+    const end = Math.ceil(nowTs / tfMs) * tfMs;
+    res[tf] = end;
+  }
+  return res;
+}
+
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "closed";
+  const totalSec = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  }
+  return `${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")}`;
+}
 
 /** Clipboard paste zone for screenshots */
 function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
@@ -130,6 +179,15 @@ export default function HomePage() {
   const [analysis, setAnalysis] = useState<ChartAnalysis | null>(null);
   const [checklist, setChecklist] = useState<ChecklistItemState[]>([]);
 
+  const [candleEnds, setCandleEnds] = useState<Record<string, number>>({});
+  const [nowTs, setNowTs] = useState<number>(() => Date.now());
+
+  // Tick "now" so timers update
+  useEffect(() => {
+    const id = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // Load pairs from localStorage
   useEffect(() => {
     try {
@@ -167,18 +225,55 @@ export default function HomePage() {
     }
   }, [pairs]);
 
-  // When a new analysis arrives, reset checklist state
+  // Load saved analysis whenever pair changes
   useEffect(() => {
-    if (analysis?.checklist) {
+    try {
+      if (typeof window === "undefined" || !selectedPair) return;
+      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
+      if (!raw) {
+        setAnalysis(null);
+        setChecklist([]);
+        setCandleEnds({});
+        return;
+      }
+      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
+      const saved = store[selectedPair];
+      if (!saved) {
+        setAnalysis(null);
+        setChecklist([]);
+        setCandleEnds({});
+        return;
+      }
+
+      setAnalysis(saved.analysis);
+      setNotes(saved.notes || "");
+      if (saved.timeframes && saved.timeframes.length) {
+        setSelectedTimeframes(saved.timeframes);
+      }
+      setCandleEnds(saved.candleEnds || {});
+      setChecklist(
+        (saved.analysis.checklist || []).map((t) => ({
+          text: t,
+          done: false,
+        })),
+      );
+    } catch (e) {
+      console.error("Failed to load saved analysis", e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPair]);
+
+  // When a new analysis arrives, reset checklist from it (if not loaded from saved)
+  useEffect(() => {
+    if (analysis?.checklist && checklist.length === 0) {
       setChecklist(
         analysis.checklist.map((text) => ({
           text,
           done: false,
         })),
       );
-    } else {
-      setChecklist([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysis]);
 
   const handlePairsTextChange = (raw: string) => {
@@ -214,6 +309,7 @@ export default function HomePage() {
     setFiles([]);
     setAnalysis(null);
     setChecklist([]);
+    setCandleEnds({});
     setError(null);
   };
 
@@ -268,7 +364,43 @@ export default function HomePage() {
       }
 
       if (data.analysis) {
+        const now = Date.now();
+        const newCandleEnds = computeCandleEndsForSelected(
+          now,
+          selectedTimeframes,
+        );
+        setCandleEnds(newCandleEnds);
         setAnalysis(data.analysis);
+        setChecklist(
+          data.analysis.checklist.map((text) => ({
+            text,
+            done: false,
+          })),
+        );
+
+        // persist per pair
+        try {
+          if (typeof window !== "undefined") {
+            const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
+            const store = raw
+              ? (JSON.parse(raw) as Record<string, SavedAnalysis>)
+              : {};
+            store[selectedPair] = {
+              pair: selectedPair,
+              timeframes: selectedTimeframes,
+              notes,
+              analysis: data.analysis,
+              candleEnds: newCandleEnds,
+              createdAt: now,
+            };
+            window.localStorage.setItem(
+              ANALYSIS_STORAGE_KEY,
+              JSON.stringify(store),
+            );
+          }
+        } catch (e) {
+          console.error("Failed to save analysis", e);
+        }
       } else {
         setError("Analysis response was empty.");
       }
@@ -390,19 +522,51 @@ export default function HomePage() {
             <div className="flex flex-wrap gap-1.5">
               {allTimeframes.map((tf) => {
                 const active = selectedTimeframes.includes(tf);
+                const endTs = candleEnds[tf];
+                const remainingMs =
+                  typeof endTs === "number" ? endTs - nowTs : null;
+                const isClosed =
+                  remainingMs !== null && Number.isFinite(remainingMs)
+                    ? remainingMs <= 0
+                    : false;
+
                 return (
-                  <button
-                    key={tf}
-                    type="button"
-                    onClick={() => toggleTimeframe(tf)}
-                    className={`rounded-full px-3 py-1 text-[11px] ${
-                      active
-                        ? "bg-emerald-500 text-black"
-                        : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                    }`}
-                  >
-                    {tf}
-                  </button>
+                  <div key={tf} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => toggleTimeframe(tf)}
+                      className={`rounded-full px-3 py-1 text-[11px] ${
+                        active
+                          ? "bg-emerald-500 text-black"
+                          : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+                      }`}
+                    >
+                      {tf}
+                    </button>
+                    {isClosed && (
+                      <div className="pointer-events-none absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* candle timers summary */}
+            <div className="mt-2 space-y-1 text-[11px] text-zinc-500">
+              {selectedTimeframes.map((tf) => {
+                const endTs = candleEnds[tf];
+                if (!endTs) return null;
+                const remaining = endTs - nowTs;
+                const isClosed = remaining <= 0;
+                return (
+                  <div key={tf}>
+                    {tf}:{" "}
+                    {isClosed
+                      ? "candle closed – update chart if you want fresh analysis"
+                      : `~${formatRemaining(
+                          remaining,
+                        )} left in current candle (approx)`}
+                  </div>
                 );
               })}
             </div>
@@ -436,7 +600,9 @@ export default function HomePage() {
                   Ready to analyze
                 </p>
                 <p className="text-[11px] opacity-80">
-                  {files.length ? `${files.length} image(s) queued` : "No charts yet"}
+                  {files.length
+                    ? `${files.length} image(s) queued`
+                    : "No charts yet"}
                 </p>
               </div>
               <button
@@ -489,7 +655,8 @@ export default function HomePage() {
             </div>
             <p className="text-[11px] text-zinc-500">
               Use file upload or paste to add charts. All timeframes are sent
-              together in a single run so the AI sees the full story.
+              together in a single run so the AI sees the full story. Saved
+              analyses are kept per pair even after refresh.
             </p>
           </section>
 
@@ -549,12 +716,12 @@ export default function HomePage() {
                 </h2>
                 <p className="text-[11px] text-zinc-500">
                   Structured like a mini ebook: context, liquidity story, entry
-                  plan, risk, red flags, and a checklist.
+                  plan, risk, red flags, and a checklist you can work through.
                 </p>
               </div>
               {analysis && (
                 <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-300">
-                  ✅ Latest run
+                  ✅ Saved analysis
                 </span>
               )}
             </div>
@@ -667,9 +834,10 @@ export default function HomePage() {
 
                     {allDone && (
                       <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
-                        All checklist items are marked as satisfied. This does
-                        NOT guarantee a winning trade, but it means the setup
-                        matches the model. Always follow your own risk plan.
+                        All checklist items are marked as satisfied. That doesn’t
+                        guarantee a winning trade, but it means the setup matches
+                        the conditions you defined. Always follow your own risk
+                        plan.
                       </p>
                     )}
                   </div>
@@ -680,7 +848,8 @@ export default function HomePage() {
                   <span className="font-semibold">Analyze Charts</span>, you'll
                   get a structured playbook here: HTF bias, liquidity story,
                   entry plan, risk, red flags, and a checklist you can tick off
-                  before taking any trade.
+                  before taking any trade. The latest analysis for each pair is
+                  saved so it survives refresh.
                 </p>
               )}
             </div>
