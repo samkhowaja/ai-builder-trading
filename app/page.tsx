@@ -11,9 +11,9 @@ export default function HomePage() {
             AI Builder Trading
           </h1>
           <p className="max-w-2xl text-sm text-zinc-400">
-            Learn entries from your favorite YouTube trader, turn them into
-            structured entry models, and quiz yourself until it&apos;s burned
-            into your brain.
+            Turn YouTube strategy videos (like Waqar Asim) into structured entry
+            models, detailed study guides, and quizzes so you actually remember
+            the setups.
           </p>
 
           <div className="flex flex-wrap gap-3">
@@ -40,27 +40,27 @@ export default function HomePage() {
             How this tool fits your learning
           </h2>
           <ol className="list-decimal space-y-2 pl-5 text-xs text-zinc-300">
-            <li>Watch a strategy video on YouTube (e.g. Waqar Asim).</li>
+            <li>Pick a strategy video on YouTube.</li>
             <li>
-              Open the{" "}
+              Go to{" "}
               <Link href="/builder" className="text-emerald-400 underline">
-                AI Entry Model Builder
+                /builder
               </Link>{" "}
-              and create a new model.
+              and paste the video link.
             </li>
             <li>
-              Paste the video URL + important timestamps (where he explains HTF
-              bias, liquidity, entries).
+              Let AI auto-create an entry model from the video and store it in
+              your library.
             </li>
             <li>
-              Let the AI Coach create detailed explanations and image
-              references so you know exactly what to screenshot.
+              Use the AI Coach to get a detailed explanation and image
+              references for what to screenshot on the charts.
             </li>
-            <li>Use the Quiz tab to drill the rules until they feel natural.</li>
+            <li>Use the Quiz feature to drill the rules into your brain.</li>
           </ol>
         </section>
 
-        {/* Section: Example video links */}
+        {/* Section: Example video link */}
         <section className="space-y-3">
           <h2 className="text-sm font-semibold text-zinc-100">
             Example Videos To Turn Into Models
@@ -76,26 +76,10 @@ export default function HomePage() {
                 Waqar Asim – Smart Money / ICT concepts
               </p>
               <p className="mt-1 text-[11px] text-zinc-400">
-                Use his videos as the base for your entry models. Note timestamps
-                where he explains bias, liquidity and entries.
+                Use any of his strategy videos as the base for your entry
+                models. Paste the link into the builder and let AI structure it.
               </p>
             </a>
-
-            {/* Add more specific video links here if you want */}
-            {/* Example: */}
-            {/* <a
-              href="https://www.youtube.com/watch?v=VIDEO_ID"
-              target="_blank"
-              className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs hover:border-emerald-500"
-            >
-              <p className="font-medium text-zinc-100">
-                London Session Liquidity Sweep Strategy
-              </p>
-              <p className="mt-1 text-[11px] text-zinc-400">
-                Great candidate to build a model: HTF bias, liquidity grab, FVG
-                entry, clear TP.
-              </p>
-            </a> */}
           </div>
         </section>
       </div>

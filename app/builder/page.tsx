@@ -79,6 +79,11 @@ export default function BuilderPage() {
   const [loadingCoach, setLoadingCoach] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
 
+  // Create model from YouTube video
+  const [videoUrlInput, setVideoUrlInput] = useState("");
+  const [creatingFromVideo, setCreatingFromVideo] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+
   // Select first model by default
   useEffect(() => {
     if (!selectedModelId && models.length > 0) {
@@ -87,6 +92,44 @@ export default function BuilderPage() {
   }, [models, selectedModelId]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId) || null;
+
+  const handleCreateModelFromVideo = async () => {
+    if (!videoUrlInput) return;
+
+    setCreatingFromVideo(true);
+    setVideoError(null);
+
+    try {
+      const res = await fetch("/api/video-to-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl: videoUrlInput }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setVideoError(data.error || "Failed to create model from video.");
+        return;
+      }
+
+      const newModel: EntryModel = {
+        id: createId(),
+        ...data.model,
+      };
+
+      setModels((prev) => [...prev, newModel]);
+      setSelectedModelId(newModel.id);
+      setQuiz(null);
+      setCoachText(null);
+      setVideoUrlInput("");
+    } catch (err) {
+      console.error(err);
+      setVideoError("Could not contact video analyzer API.");
+    } finally {
+      setCreatingFromVideo(false);
+    }
+  };
 
   const handleAddModel = () => {
     const newModel: EntryModel = {
@@ -224,13 +267,43 @@ export default function BuilderPage() {
   return (
     <div className="min-h-screen bg-black text-zinc-100">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 md:flex-row">
-        {/* Left: Models list */}
-        <aside className="w-full md:w-64">
+        {/* Left: Models list + create from video */}
+        <aside className="w-full md:w-72">
+          {/* Create from YouTube */}
+          <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs">
+            <p className="mb-2 font-semibold text-zinc-100">
+              📺 Create Entry Model From YouTube
+            </p>
+            <div className="flex flex-col gap-2 md:flex-row">
+              <input
+                className="flex-1 rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                placeholder="Paste YouTube video URL"
+                value={videoUrlInput}
+                onChange={(e) => setVideoUrlInput(e.target.value)}
+              />
+              <button
+                onClick={handleCreateModelFromVideo}
+                disabled={creatingFromVideo || !videoUrlInput}
+                className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-medium text-black disabled:cursor-not-allowed disabled:bg-emerald-900"
+              >
+                {creatingFromVideo ? "Analyzing..." : "Generate Model"}
+              </button>
+            </div>
+            {videoError && (
+              <p className="mt-2 text-[11px] text-red-400">{videoError}</p>
+            )}
+            <p className="mt-2 text-[11px] text-zinc-400">
+              Start with Waqar&apos;s strategy videos. This will invent one
+              clean entry model based on that video. Later you can refine
+              details and timestamps.
+            </p>
+          </div>
+
           <div className="mb-3 flex items-center justify-between">
-            <h1 className="text-lg font-semibold">AI Entry Models</h1>
+            <h1 className="text-sm font-semibold">AI Entry Models</h1>
             <button
               onClick={handleAddModel}
-              className="rounded-md bg-emerald-500 px-2 py-1 text-xs font-medium text-black"
+              className="rounded-md bg-emerald-500 px-2 py-1 text-[11px] font-medium text-black"
             >
               + New
             </button>
@@ -252,11 +325,19 @@ export default function BuilderPage() {
                 }}
               >
                 <div className="flex items-center justify-between">
-                  <p className="font-medium">{model.name}</p>
+                  <p className="font-medium line-clamp-2">{model.name}</p>
                 </div>
                 <p className="mt-1 text-[11px] text-zinc-400">
                   {model.style} • {model.timeframe} • {model.instrument}
                 </p>
+                {model.sourceVideoUrl && (
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    From video:{" "}
+                    {model.sourceVideoTitle
+                      ? model.sourceVideoTitle
+                      : model.sourceVideoUrl}
+                  </p>
+                )}
                 <div className="mt-2 flex gap-1">
                   <button
                     onClick={(e) => {
@@ -282,8 +363,9 @@ export default function BuilderPage() {
 
             {models.length === 0 && (
               <p className="text-xs text-zinc-500">
-                No models yet. Click <span className="text-emerald-400">New</span> to
-                create your first entry model.
+                No models yet. Paste a YouTube video or click{" "}
+                <span className="text-emerald-400">New</span> to create your
+                first entry model.
               </p>
             )}
           </div>

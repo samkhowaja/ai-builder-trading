@@ -1,3 +1,4 @@
+// app/api/generate-quiz/route.ts
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
@@ -6,7 +7,7 @@ const client = new OpenAI({
 });
 
 type EntryModel = {
-  id: string;
+  id?: string;
   name: string;
   style: string;
   timeframe: string;
@@ -17,7 +18,6 @@ type EntryModel = {
   rules: string;
   checklist: string[];
   tags: string[];
-
   sourceVideoUrl?: string;
   sourceVideoTitle?: string;
   sourceTimestamps?: string;
