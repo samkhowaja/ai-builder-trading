@@ -21,6 +21,7 @@ type EntryModel = {
   sourceVideoUrl?: string;
   sourceVideoTitle?: string;
   sourceTimestamps?: string;
+  sourceChannel?: string;
 };
 
 type ScreenshotIdea = {
@@ -80,7 +81,8 @@ ${model.checklist.join("\n")}
 
 Tags: ${model.tags.join(", ")}
 
-YouTube Source (if any):
+Source:
+Channel: ${model.sourceChannel || "N/A"}
 Video title: ${model.sourceVideoTitle || "N/A"}
 Video URL: ${model.sourceVideoUrl || "N/A"}
 Important timestamps / notes:
@@ -100,10 +102,6 @@ Return a JSON object with this EXACT shape:
     {
       "label": "Image 1: HTF liquidity above previous day high",
       "description": "Describe exactly what the chart should look like and which timeframe/session to use."
-    },
-    {
-      "label": "Image 2: Stop-hunt candle through the high at London open",
-      "description": "..."
     }
   ],
   "practiceSteps": [
@@ -138,7 +136,6 @@ Rules:
       );
     }
 
-    // Basic safety defaults
     if (!Array.isArray(guide.rulesChecklist)) guide.rulesChecklist = [];
     if (!Array.isArray(guide.screenshotIdeas)) guide.screenshotIdeas = [];
     if (!Array.isArray(guide.practiceSteps)) guide.practiceSteps = [];

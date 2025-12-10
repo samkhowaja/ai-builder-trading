@@ -16,10 +16,11 @@ type EntryModel = {
   checklist: string[];
   tags: string[];
 
-  // YouTube reference for learning
+  // YouTube / source info
   sourceVideoUrl?: string;
   sourceVideoTitle?: string;
   sourceTimestamps?: string; // e.g. "01:30 - HTF bias\n04:10 - Liquidity above high"
+  sourceChannel?: string; // e.g. "Waqar Asim"
 };
 
 type QuizItem = {
@@ -43,7 +44,8 @@ type ModelGuide = {
 
 const createId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-const initialModels: EntryModel[] = [
+// initial default in case there is nothing in localStorage yet
+const defaultModels: EntryModel[] = [
   {
     id: createId(),
     name: "EURUSD London Session Liquidity Sweep",
@@ -73,11 +75,15 @@ const initialModels: EntryModel[] = [
     sourceVideoUrl: "",
     sourceVideoTitle: "",
     sourceTimestamps: "",
+    sourceChannel: "Default",
   },
 ];
 
+const MODELS_STORAGE_KEY = "ai-builder-models-v1";
+const GUIDES_STORAGE_KEY = "ai-builder-guides-v1";
+
 export default function BuilderPage() {
-  const [models, setModels] = useState<EntryModel[]>(initialModels);
+  const [models, setModels] = useState<EntryModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
 
   // Quiz
@@ -92,32 +98,95 @@ export default function BuilderPage() {
 
   // Learn view
   const [viewMode, setViewMode] = useState<"learn" | "edit">("learn");
-  const [guide, setGuide] = useState<ModelGuide | null>(null);
   const [loadingGuide, setLoadingGuide] = useState(false);
   const [guideError, setGuideError] = useState<string | null>(null);
+  const [guidesByModelId, setGuidesByModelId] = useState<
+    Record<string, ModelGuide>
+  >({});
 
-  // Select first model by default
+  // Channel collapse state
+  const [collapsedChannels, setCollapsedChannels] = useState<
+    Record<string, boolean>
+  >({});
+
+  // ---------- PERSISTENCE: load from localStorage on first mount ----------
   useEffect(() => {
-    if (!selectedModelId && models.length > 0) {
-      setSelectedModelId(models[0].id);
+    try {
+      const rawModels =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(MODELS_STORAGE_KEY)
+          : null;
+      if (rawModels) {
+        const parsed = JSON.parse(rawModels) as EntryModel[];
+        if (parsed.length > 0) {
+          setModels(parsed);
+          setSelectedModelId(parsed[parsed.length - 1].id); // last added
+        } else {
+          setModels(defaultModels);
+          setSelectedModelId(defaultModels[0].id);
+        }
+      } else {
+        setModels(defaultModels);
+        setSelectedModelId(defaultModels[0].id);
+      }
+
+      const rawGuides =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(GUIDES_STORAGE_KEY)
+          : null;
+      if (rawGuides) {
+        const parsedGuides = JSON.parse(rawGuides) as Record<
+          string,
+          ModelGuide
+        >;
+        setGuidesByModelId(parsedGuides);
+      }
+    } catch (e) {
+      console.error("Failed to load from localStorage", e);
+      setModels(defaultModels);
+      setSelectedModelId(defaultModels[0].id);
     }
-  }, [models, selectedModelId]);
+  }, []);
+
+  // Save models whenever they change
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          MODELS_STORAGE_KEY,
+          JSON.stringify(models),
+        );
+      }
+    } catch (e) {
+      console.error("Failed to save models", e);
+    }
+  }, [models]);
+
+  // Save guides whenever they change
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          GUIDES_STORAGE_KEY,
+          JSON.stringify(guidesByModelId),
+        );
+      }
+    } catch (e) {
+      console.error("Failed to save guides", e);
+    }
+  }, [guidesByModelId]);
 
   const selectedModel = models.find((m) => m.id === selectedModelId) || null;
+  const currentGuide: ModelGuide | null = selectedModel
+    ? guidesByModelId[selectedModel.id] || null
+    : null;
 
-  // Fetch learning guide whenever selected model changes
-  useEffect(() => {
-    if (!selectedModel) {
-      setGuide(null);
-      return;
-    }
-    fetchGuide(selectedModel);
-  }, [selectedModelId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Fetch guide for a model only if we don't already have it cached
+  const fetchGuideIfNeeded = async (model: EntryModel) => {
+    if (guidesByModelId[model.id]) return; // already have
 
-  const fetchGuide = async (model: EntryModel) => {
     setLoadingGuide(true);
     setGuideError(null);
-    setGuide(null);
 
     try {
       const res = await fetch("/api/explain-model", {
@@ -133,7 +202,8 @@ export default function BuilderPage() {
         return;
       }
 
-      setGuide(data.guide as ModelGuide);
+      const guide = data.guide as ModelGuide;
+      setGuidesByModelId((prev) => ({ ...prev, [model.id]: guide }));
     } catch (err) {
       console.error(err);
       setGuideError("Failed to contact learning guide API.");
@@ -141,6 +211,16 @@ export default function BuilderPage() {
       setLoadingGuide(false);
     }
   };
+
+  // When selected model changes, auto-load guide if not present
+  useEffect(() => {
+    if (selectedModel) {
+      setQuiz(null); // reset quiz on model change
+      setViewMode("learn");
+      fetchGuideIfNeeded(selectedModel);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModelId]);
 
   const handleCreateModelFromVideo = async () => {
     if (!videoUrlInput) return;
@@ -170,9 +250,9 @@ export default function BuilderPage() {
       setModels((prev) => [...prev, newModel]);
       setSelectedModelId(newModel.id);
       setQuiz(null);
-      setGuide(null);
       setVideoUrlInput("");
       setViewMode("learn");
+      // guide will be auto-fetched by useEffect
     } catch (err) {
       console.error(err);
       setVideoError("Could not contact video analyzer API.");
@@ -197,11 +277,11 @@ export default function BuilderPage() {
       sourceVideoUrl: "",
       sourceVideoTitle: "",
       sourceTimestamps: "",
+      sourceChannel: "Ungrouped",
     };
     setModels((prev) => [...prev, newModel]);
     setSelectedModelId(newModel.id);
     setQuiz(null);
-    setGuide(null);
     setViewMode("learn");
   };
 
@@ -216,16 +296,19 @@ export default function BuilderPage() {
     setModels((prev) => [...prev, copy]);
     setSelectedModelId(copy.id);
     setQuiz(null);
-    setGuide(null);
     setViewMode("learn");
   };
 
   const handleDeleteModel = (id: string) => {
     setModels((prev) => prev.filter((m) => m.id !== id));
+    setGuidesByModelId((prev) => {
+      const clone = { ...prev };
+      delete clone[id];
+      return clone;
+    });
     if (selectedModelId === id) {
       setSelectedModelId(null);
       setQuiz(null);
-      setGuide(null);
     }
   };
 
@@ -291,11 +374,24 @@ export default function BuilderPage() {
         </p>
       ));
 
+  // Group models by channel name (folder style)
+  const groupedByChannel: Record<string, EntryModel[]> = models.reduce(
+    (acc, model) => {
+      const channel = model.sourceChannel || "Ungrouped";
+      if (!acc[channel]) acc[channel] = [];
+      acc[channel].push(model);
+      return acc;
+    },
+    {} as Record<string, EntryModel[]>,
+  );
+
+  const channelNames = Object.keys(groupedByChannel).sort();
+
   return (
     <div className="min-h-screen bg-black text-zinc-100">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 md:flex-row">
         {/* Left: Models list + create from video */}
-        <aside className="w-full md:w-72">
+        <aside className="w-full md:w-80">
           {/* Create from YouTube */}
           <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs">
             <p className="mb-2 font-semibold text-zinc-100">
@@ -336,57 +432,89 @@ export default function BuilderPage() {
             </button>
           </div>
 
+          {/* Folders by channel */}
           <div className="space-y-2">
-            {models.map((model) => (
-              <div
-                key={model.id}
-                className={`cursor-pointer rounded-lg border px-3 py-2 text-xs transition ${
-                  model.id === selectedModelId
-                    ? "border-emerald-500 bg-emerald-500/10"
-                    : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-600"
-                }`}
-                onClick={() => {
-                  setSelectedModelId(model.id);
-                  setQuiz(null);
-                  setViewMode("learn");
-                }}
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-medium line-clamp-2">{model.name}</p>
-                </div>
-                <p className="mt-1 text-[11px] text-zinc-400">
-                  {model.style} • {model.timeframe} • {model.instrument}
-                </p>
-                {model.sourceVideoUrl && (
-                  <p className="mt-1 text-[10px] text-zinc-500">
-                    From video:{" "}
-                    {model.sourceVideoTitle
-                      ? model.sourceVideoTitle
-                      : model.sourceVideoUrl}
-                  </p>
-                )}
-                <div className="mt-2 flex gap-1">
+            {channelNames.map((channel) => {
+              const modelsInChannel = groupedByChannel[channel];
+              const collapsed = collapsedChannels[channel] ?? false;
+              return (
+                <div
+                  key={channel}
+                  className="rounded-lg border border-zinc-800 bg-zinc-900/70"
+                >
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDuplicateModel(model.id);
-                    }}
-                    className="rounded bg-zinc-800 px-2 py-0.5 text-[10px]"
+                    onClick={() =>
+                      setCollapsedChannels((prev) => ({
+                        ...prev,
+                        [channel]: !collapsed,
+                      }))
+                    }
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs"
                   >
-                    Duplicate
+                    <span className="font-semibold text-zinc-100">
+                      {channel}
+                    </span>
+                    <span className="text-[11px] text-zinc-400">
+                      {collapsed ? "▶" : "▼"} {modelsInChannel.length}
+                    </span>
                   </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteModel(model.id);
-                    }}
-                    className="rounded bg-red-600/80 px-2 py-0.5 text-[10px]"
-                  >
-                    Delete
-                  </button>
+                  {!collapsed && (
+                    <div className="space-y-2 border-t border-zinc-800 px-3 py-2">
+                      {modelsInChannel.map((model) => (
+                        <div
+                          key={model.id}
+                          className={`cursor-pointer rounded-md border px-3 py-2 text-xs transition ${
+                            model.id === selectedModelId
+                              ? "border-emerald-500 bg-emerald-500/10"
+                              : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-600"
+                          }`}
+                          onClick={() => {
+                            setSelectedModelId(model.id);
+                          }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="font-medium line-clamp-2">
+                              {model.name}
+                            </p>
+                          </div>
+                          <p className="mt-1 text-[11px] text-zinc-400">
+                            {model.style} • {model.timeframe} •{" "}
+                            {model.instrument}
+                          </p>
+                          {model.sourceVideoUrl && (
+                            <p className="mt-1 text-[10px] text-zinc-500">
+                              From video:{" "}
+                              {model.sourceVideoTitle ||
+                                model.sourceVideoUrl}
+                            </p>
+                          )}
+                          <div className="mt-2 flex gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDuplicateModel(model.id);
+                              }}
+                              className="rounded bg-zinc-800 px-2 py-0.5 text-[10px]"
+                            >
+                              Duplicate
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteModel(model.id);
+                              }}
+                              className="rounded bg-red-600/80 px-2 py-0.5 text-[10px]"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {models.length === 0 && (
               <p className="text-xs text-zinc-500">
@@ -418,6 +546,11 @@ export default function BuilderPage() {
                     {selectedModel.session || "N/A"} • Risk:{" "}
                     {selectedModel.riskPerTrade}% per trade
                   </p>
+                  {selectedModel.sourceChannel && (
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      Channel: {selectedModel.sourceChannel}
+                    </p>
+                  )}
                   {selectedModel.sourceVideoUrl && (
                     <p className="mt-1 text-[11px] text-zinc-500">
                       Source video:{" "}
@@ -454,21 +587,24 @@ export default function BuilderPage() {
               {viewMode === "learn" && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3">
                   <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                    {["Overview", "Price Story", "Checklist", "When Not To Trade", "Screenshot Ideas", "Practice"].map(
-                      (label, idx) => (
-                        <div key={label} className="flex flex-1 items-center">
-                          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-black">
-                            {idx + 1}
-                          </div>
-                          <span className="ml-1 hidden md:inline">
-                            {label}
-                          </span>
-                          {idx < 5 && (
-                            <div className="mx-1 h-px flex-1 bg-zinc-700" />
-                          )}
+                    {[
+                      "Overview",
+                      "Price Story",
+                      "Checklist",
+                      "When Not To Trade",
+                      "Screenshot Ideas",
+                      "Practice",
+                    ].map((label, idx) => (
+                      <div key={label} className="flex flex-1 items-center">
+                        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-black">
+                          {idx + 1}
                         </div>
-                      ),
-                    )}
+                        <span className="ml-1 hidden md:inline">{label}</span>
+                        {idx < 5 && (
+                          <div className="mx-1 h-px flex-1 bg-zinc-700" />
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -484,14 +620,14 @@ export default function BuilderPage() {
                   {guideError && (
                     <p className="text-xs text-red-400">{guideError}</p>
                   )}
-                  {!loadingGuide && guide && (
+                  {!loadingGuide && currentGuide && (
                     <>
                       {/* OVERVIEW */}
                       <div>
                         <h3 className="mb-2 text-sm font-semibold text-zinc-100">
                           1. Overview – What this model is about
                         </h3>
-                        {renderParagraphs(guide.overview)}
+                        {renderParagraphs(currentGuide.overview)}
                       </div>
 
                       {/* STORY */}
@@ -499,7 +635,7 @@ export default function BuilderPage() {
                         <h3 className="mb-2 text-sm font-semibold text-zinc-100">
                           2. Step-by-step price story
                         </h3>
-                        {renderParagraphs(guide.story)}
+                        {renderParagraphs(currentGuide.story)}
                       </div>
 
                       {/* CHECKLIST */}
@@ -508,7 +644,7 @@ export default function BuilderPage() {
                           3. Rules checklist (before you click Buy/Sell)
                         </h3>
                         <ul className="space-y-1 text-[13px] text-zinc-200">
-                          {guide.rulesChecklist.map((item, idx) => (
+                          {currentGuide.rulesChecklist.map((item, idx) => (
                             <li
                               key={idx}
                               className="flex items-start gap-2 leading-relaxed"
@@ -525,7 +661,7 @@ export default function BuilderPage() {
                         <h3 className="mb-2 text-sm font-semibold text-zinc-100">
                           4. When NOT to trade this model
                         </h3>
-                        {renderParagraphs(guide.invalidation)}
+                        {renderParagraphs(currentGuide.invalidation)}
                       </div>
 
                       {/* SCREENSHOT IDEAS */}
@@ -537,16 +673,18 @@ export default function BuilderPage() {
                           Use these as a checklist while watching the YouTube
                           video or replaying the chart. For each card, pause the
                           video and take a screenshot or recreate it in
-                          TradingView.
+                          TradingView. (Right now these are placeholders – you
+                          add your own chart images.)
                         </p>
                         <div className="grid gap-3 md:grid-cols-2">
-                          {guide.screenshotIdeas.map((img, idx) => (
+                          {currentGuide.screenshotIdeas.map((img, idx) => (
                             <div
                               key={idx}
                               className="flex flex-col rounded-lg border border-zinc-800 bg-black/40 p-3 text-[12px]"
                             >
                               <div className="mb-2 flex-1 rounded-md border border-dashed border-zinc-700 bg-zinc-900/60 p-4 text-center text-[11px] text-zinc-500">
-                                Image placeholder
+                                Image placeholder – take / paste a chart
+                                screenshot here
                               </div>
                               <p className="font-semibold text-zinc-100">
                                 {img.label}
@@ -565,7 +703,7 @@ export default function BuilderPage() {
                           6. Practice drills
                         </h3>
                         <ul className="space-y-1 text-[13px] text-zinc-200">
-                          {guide.practiceSteps.map((step, idx) => (
+                          {currentGuide.practiceSteps.map((step, idx) => (
                             <li key={idx} className="flex gap-2">
                               <span className="mt-[2px] text-emerald-400">
                                 ●
@@ -579,7 +717,7 @@ export default function BuilderPage() {
                   )}
                 </section>
               ) : (
-                /* EDITOR MODE – same fields you had before */
+                /* EDITOR MODE – same fields, now with sourceChannel */
                 <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 shadow-lg">
                   <h2 className="mb-3 text-sm font-semibold text-zinc-100">
                     Model Editor
@@ -742,6 +880,19 @@ export default function BuilderPage() {
                       <h3 className="text-xs font-semibold text-zinc-300">
                         YouTube Reference
                       </h3>
+                      <label className="block text-xs text-zinc-400">
+                        Channel Name
+                        <input
+                          className="mt-1 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-xs outline-none"
+                          value={selectedModel.sourceChannel ?? ""}
+                          onChange={(e) =>
+                            updateModel(selectedModel.id, {
+                              sourceChannel: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. Waqar Asim"
+                        />
+                      </label>
                       <label className="block text-xs text-zinc-400">
                         Video URL
                         <input

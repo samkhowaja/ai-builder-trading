@@ -20,6 +20,7 @@ type EntryModelCore = {
   sourceVideoUrl?: string;
   sourceVideoTitle?: string;
   sourceTimestamps?: string;
+  sourceChannel?: string;
 };
 
 type Body = {
@@ -68,14 +69,15 @@ Task:
   ],
   "tags": ["ICT", "liquidity", "FVG"],
   "sourceVideoTitle": "short guessed title like 'London liquidity sweep on EURUSD'",
-  "sourceTimestamps": ""
+  "sourceTimestamps": "",
+  "sourceChannel": "channel or trader name, e.g. 'Waqar Asim'"
 }
 
-3) Return ONLY that JSON object.`;
+3) RETURN ONLY the JSON object. No explanation, no extra text.`;
 
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
-      response_format: { type: "json_object" }, // 👈 force valid JSON
+      response_format: { type: "json_object" }, // force JSON
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -96,15 +98,11 @@ Task:
       );
     }
 
-    // Attach the URL so you always know where it came from
     model.sourceVideoUrl = videoUrl;
 
-    // Safety defaults
     if (!Array.isArray(model.checklist)) model.checklist = [];
     if (!Array.isArray(model.tags)) model.tags = [];
-    if (typeof model.riskPerTrade !== "number") {
-      model.riskPerTrade = 1;
-    }
+    if (typeof model.riskPerTrade !== "number") model.riskPerTrade = 1;
 
     return NextResponse.json({ model });
   } catch (err) {

@@ -21,6 +21,7 @@ type EntryModel = {
   sourceVideoUrl?: string;
   sourceVideoTitle?: string;
   sourceTimestamps?: string;
+  sourceChannel?: string;
 };
 
 type Body = {
@@ -84,7 +85,7 @@ Do NOT add any extra text before or after the JSON.`;
     let quiz: { question: string; answer: string }[] = [];
     try {
       quiz = JSON.parse(content);
-    } catch (e) {
+    } catch {
       quiz = [
         {
           question: "Explain the main idea of this entry model.",
