@@ -203,6 +203,76 @@ export default function Home() {
     setSavingProject(false);
   };
 
+  // Delete current project (and its models)
+  const deleteCurrentProject = async () => {
+    if (!currentProject) return;
+
+    if (projects.length <= 1) {
+      alert("You must have at least one project. Create another one first.");
+      return;
+    }
+
+    const confirmed = confirm(
+      `Delete project "${currentProject.name}" and all its models?`
+    );
+    if (!confirmed) return;
+
+    setSavingProject(true);
+
+    // 1) Delete models for this project
+    const { error: modelsError } = await supabase
+      .from("models")
+      .delete()
+      .eq("project_id", currentProject.id);
+
+    if (modelsError) {
+      alert(
+        "Supabase model delete error:\n" + JSON.stringify(modelsError, null, 2)
+      );
+      console.error("Error deleting models for project:", modelsError);
+      setSavingProject(false);
+      return;
+    }
+
+    // 2) Delete the project
+    const { error: projError } = await supabase
+      .from("projects")
+      .delete()
+      .eq("id", currentProject.id);
+
+    if (projError) {
+      alert(
+        "Supabase project delete error:\n" + JSON.stringify(projError, null, 2)
+      );
+      console.error("Error deleting project:", projError);
+      setSavingProject(false);
+      return;
+    }
+
+    // 3) Update local state
+    const remaining = projects.filter((p) => p.id !== currentProject.id);
+    setProjects(remaining);
+
+    // Choose a new current project (first remaining)
+    const next = remaining[0] || null;
+    if (next) {
+      setCurrentProjectId(next.id);
+      setProjectName(next.name);
+      setTeacherType(next.teacher_type);
+      setSourceUrl(next.source_url);
+      await loadModelsForProject(next.id);
+    } else {
+      // Shouldn't happen because we block deleting last project, but just in case
+      setCurrentProjectId(null);
+      setProjectName("");
+      setTeacherType("channel");
+      setSourceUrl("");
+      setModels([]);
+    }
+
+    setSavingProject(false);
+  };
+
   const addModel = async () => {
     if (!currentProject) {
       alert("Project not loaded yet. Please wait a moment and try again.");
@@ -299,6 +369,13 @@ export default function Home() {
                 className="rounded-xl border border-slate-700 px-3 py-2 text-xs bg-slate-950 hover:bg-slate-800 transition disabled:opacity-60"
               >
                 {savingProject ? "Creating..." : "New project"}
+              </button>
+              <button
+                onClick={deleteCurrentProject}
+                disabled={savingProject || !currentProject}
+                className="rounded-xl border border-red-500/70 px-3 py-2 text-xs text-red-300 bg-slate-950 hover:bg-red-500/10 transition disabled:opacity-40"
+              >
+                Delete project
               </button>
             </div>
           </div>
