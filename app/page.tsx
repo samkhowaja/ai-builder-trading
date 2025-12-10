@@ -24,6 +24,12 @@ type ScreenshotGuide = {
   timeframeHint?: string;
 };
 
+type LearningResourceQuery = {
+  concept: string;
+  query: string;
+  platforms: string[];
+};
+
 type ChartAnalysis = {
   overview: string;
   htfBias: string;
@@ -31,8 +37,13 @@ type ChartAnalysis = {
   entryPlan: string;
   riskManagement: string;
   redFlags: string;
+  nextMove: string;
+  qualityScore: number;
+  qualityLabel: string;
+  qualityReason: string;
   checklist: ChecklistItem[];
   screenshotGuides: ScreenshotGuide[];
+  learningQueries: LearningResourceQuery[];
 };
 
 type AnalyzeResponse = {
@@ -59,6 +70,15 @@ type ChartImage = {
   id: string;
   name: string;
   dataUrl: string;
+};
+
+type SetupSummary = {
+  pair: string;
+  qualityScore: number;
+  qualityLabel: string;
+  biasSnippet: string;
+  nextMoveSnippet: string;
+  updatedAt: number;
 };
 
 const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
@@ -114,7 +134,23 @@ function makeId() {
   return Math.random().toString(36).slice(2);
 }
 
-/** Clipboard paste zone for screenshots (thumbnails only) */
+function buildSearchUrl(platform: string, query: string): string {
+  const q = encodeURIComponent(query);
+  switch (platform) {
+    case "YouTube":
+      return `https://www.youtube.com/results?search_query=${q}`;
+    case "TikTok":
+      return `https://www.tiktok.com/search?q=${q}`;
+    case "Instagram":
+      return `https://www.instagram.com/explore/search/keyword/?q=${q}`;
+    case "Images":
+      return `https://www.google.com/search?tbm=isch&q=${q}`;
+    default:
+      return `https://www.google.com/search?q=${q}`;
+  }
+}
+
+/** Clipboard paste zone for screenshots (thumbnail only) */
 function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
   const [images, setImages] = useState<ClipboardImage[]>([]);
 
@@ -157,7 +193,7 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
           <span className="font-semibold text-zinc-100">
             Paste screenshots from clipboard
           </span>{" "}
-          (Ctrl+V / Cmd+V) while this panel is focused.
+          (Ctrl+V or Cmd+V) while this panel is focused.
         </p>
         <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
           Click here then paste
@@ -166,9 +202,9 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
-          In TradingView copy a screenshot to clipboard, click in this box, and
-          press Ctrl+V or Cmd+V. The images will also be stored under the
-          current pair.
+          In TradingView copy a screenshot to clipboard, click this box, and
+          press Ctrl+V or Cmd+V. The images will be stored under the current
+          pair.
         </p>
       ) : (
         <div className="mt-2 grid max-h-40 grid-cols-2 gap-2 overflow-auto">
@@ -201,9 +237,7 @@ export default function HomePage() {
     "M15",
   ]);
 
-  // Persistent chart screenshots per pair
   const [chartImages, setChartImages] = useState<ChartImage[]>([]);
-
   const [notes, setNotes] = useState("");
 
   const [loading, setLoading] = useState(false);
@@ -213,6 +247,8 @@ export default function HomePage() {
 
   const [candleEnds, setCandleEnds] = useState<Record<string, number>>({});
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
+
+  const [setupRadar, setSetupRadar] = useState<SetupSummary[]>([]);
 
   // Tick "now" so timers update
   useEffect(() => {
@@ -256,6 +292,45 @@ export default function HomePage() {
       console.error("failed to save pairs", e);
     }
   }, [pairs]);
+
+  // Helper to rebuild radar list from storage
+  const refreshSetupRadarFromStorage = () => {
+    try {
+      if (typeof window === "undefined") return;
+      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
+      if (!raw) {
+        setSetupRadar([]);
+        return;
+      }
+      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
+      const list: SetupSummary[] = Object.values(store).map((sa) => {
+        const a = sa.analysis;
+        const qs = typeof a.qualityScore === "number" ? a.qualityScore : 0;
+        const label = a.qualityLabel || "N/A";
+        const bias = (a.htfBias || "").slice(0, 160);
+        const nm = (a.nextMove || "").slice(0, 160);
+        return {
+          pair: sa.pair,
+          qualityScore: qs,
+          qualityLabel: label,
+          biasSnippet: bias,
+          nextMoveSnippet: nm,
+          updatedAt: sa.createdAt,
+        };
+      });
+
+      list.sort((a, b) => b.qualityScore - a.qualityScore);
+      setSetupRadar(list);
+    } catch (e) {
+      console.error("Failed to build radar", e);
+      setSetupRadar([]);
+    }
+  };
+
+  // Build radar on first load
+  useEffect(() => {
+    refreshSetupRadarFromStorage();
+  }, []);
 
   // Load screenshots whenever pair changes
   useEffect(() => {
@@ -482,6 +557,9 @@ export default function HomePage() {
         } catch (e) {
           console.error("Failed to save analysis", e);
         }
+
+        // rebuild radar with new data
+        refreshSetupRadarFromStorage();
       } else {
         setError("Analysis response was empty.");
       }
@@ -715,7 +793,7 @@ export default function HomePage() {
           </section>
         </aside>
 
-        {/* RIGHT COLUMN – Images and Analysis */}
+        {/* RIGHT COLUMN – Images, analysis, radar */}
         <main className="flex-1 space-y-4">
           {/* Step indicator */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
@@ -738,7 +816,8 @@ export default function HomePage() {
             </div>
             <p className="text-[11px] text-zinc-500">
               Screenshots are stored per pair until you remove them. The latest
-              analysis per pair is also saved so it survives refresh.
+              analysis per pair is also saved, so you can switch pairs or
+              refresh without losing the playbook.
             </p>
           </section>
 
@@ -756,8 +835,8 @@ export default function HomePage() {
                 className="text-xs"
               />
               <p className="text-[11px] text-zinc-500">
-                You can select multiple images at once such as H4, H1, M15 and
-                M5. They stay attached to this pair until you remove them.
+                Select multiple images at once, for example H4, H1, M15 and M5.
+                They stay attached to this pair until you remove them.
               </p>
             </div>
 
@@ -797,7 +876,7 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* Ebook-style analysis + checklist + screenshot guides */}
+          {/* Ebook-style analysis + checklist + screenshot guides + learning resources */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <div>
@@ -807,14 +886,22 @@ export default function HomePage() {
                 </h2>
                 <p className="text-[11px] text-zinc-500">
                   Structured like a mini ebook: context, liquidity story, entry
-                  plan, risk, red flags, checklist, and screenshot overlay
-                  ideas.
+                  plan, risk, red flags, scenario for the next move, checklist
+                  and visual practice ideas.
                 </p>
               </div>
               {analysis && (
-                <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-300">
-                  Saved analysis
-                </span>
+                <div className="flex flex-col items-end gap-1 text-right">
+                  <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-300">
+                    Saved analysis
+                  </span>
+                  <span className="text-[11px] text-amber-300">
+                    Quality: {analysis.qualityLabel || "N/A"}{" "}
+                    {typeof analysis.qualityScore === "number"
+                      ? `(${analysis.qualityScore.toFixed(0)}/100)`
+                      : ""}
+                  </span>
+                </div>
               )}
             </div>
 
@@ -867,6 +954,23 @@ export default function HomePage() {
                       6. Red flags – when not to take this setup
                     </h3>
                     {renderParagraphs(analysis.redFlags)}
+                  </div>
+
+                  {/* Scenario / next move */}
+                  <div>
+                    <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-emerald-300">
+                      7. Scenario for the next possible move
+                    </h3>
+                    <p className="mb-1 text-[11px] text-zinc-500">
+                      Educational if or then scenarios only. This is not
+                      financial advice.
+                    </p>
+                    {renderParagraphs(analysis.nextMove)}
+                    {analysis.qualityReason && (
+                      <p className="mt-1 text-[11px] text-amber-300">
+                        Quality reason: {analysis.qualityReason}
+                      </p>
+                    )}
                   </div>
 
                   {/* Checklist */}
@@ -973,18 +1077,160 @@ export default function HomePage() {
                       </p>
                     )}
                   </div>
+
+                  {/* Learning resources – search links */}
+                  <div className="mt-3 rounded-lg border border-zinc-800 bg-black/60 p-3">
+                    <h3 className="mb-1 text-[13px] font-semibold text-zinc-100">
+                      🎓 Practice resources for this idea
+                    </h3>
+                    <p className="mb-2 text-[11px] text-zinc-500">
+                      These buttons open search pages so you can find example
+                      videos and images on other platforms. Look for visuals
+                      that match what the analysis described.
+                    </p>
+                    {analysis.learningQueries &&
+                    analysis.learningQueries.length ? (
+                      <div className="space-y-2">
+                        {analysis.learningQueries.map((q, idx) => {
+                          const queryText = q.query || q.concept;
+                          return (
+                            <div
+                              key={idx}
+                              className="flex flex-col gap-1 rounded-md border border-zinc-800 bg-zinc-950/80 px-2 py-2"
+                            >
+                              <div className="text-[12px] font-semibold text-zinc-100">
+                                {q.concept}
+                              </div>
+                              <div className="text-[11px] text-zinc-500">
+                                Search phrase: <span>{queryText}</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
+                                <a
+                                  href={buildSearchUrl(
+                                    "YouTube",
+                                    queryText,
+                                  )}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full bg-red-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-red-600"
+                                >
+                                  YouTube
+                                </a>
+                                <a
+                                  href={buildSearchUrl(
+                                    "TikTok",
+                                    queryText,
+                                  )}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-50 hover:bg-zinc-700"
+                                >
+                                  TikTok
+                                </a>
+                                <a
+                                  href={buildSearchUrl(
+                                    "Instagram",
+                                    queryText,
+                                  )}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full bg-purple-700/80 px-3 py-1 text-xs font-medium text-white hover:bg-purple-700"
+                                >
+                                  Instagram
+                                </a>
+                                <a
+                                  href={buildSearchUrl(
+                                    "Images",
+                                    queryText,
+                                  )}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full bg-blue-700/80 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                                >
+                                  Images
+                                </a>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-zinc-500">
+                        No learning queries were generated for this run.
+                      </p>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">
                   Once you store screenshots and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, you
                   will get a structured playbook here: higher timeframe bias,
-                  liquidity story, entry plan, risk, red flags, checklist, and
-                  screenshot overlay ideas. Everything is saved per pair so you
-                  do not lose it on refresh.
+                  liquidity story, entry plan, risk, red flags, scenario for the
+                  next move, checklist and practice links. Everything is saved
+                  per pair so you do not lose it on refresh.
                 </p>
               )}
             </div>
+          </section>
+
+          {/* Setup radar and predictions across pairs */}
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-50">
+                4. Setup radar and predictions across pairs
+              </h2>
+              <span className="text-[11px] text-zinc-400">
+                Sorted by quality score (A plus at the top)
+              </span>
+            </div>
+            {setupRadar.length ? (
+              <div className="space-y-1 text-[11px]">
+                {setupRadar.map((s) => (
+                  <div
+                    key={s.pair}
+                    className="flex flex-col gap-1 rounded-md border border-zinc-800 bg-black/60 px-2 py-2 md:flex-row md:items-start md:gap-3"
+                  >
+                    <div className="flex items-center gap-2 md:w-40">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPair(s.pair)}
+                        className="rounded-full bg-zinc-900 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-800"
+                      >
+                        {s.pair}
+                      </button>
+                      <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                        {s.qualityLabel}{" "}
+                        {s.qualityScore
+                          ? `(${s.qualityScore.toFixed(0)})`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <p className="text-[11px] text-zinc-300">
+                        <span className="font-semibold text-zinc-400">
+                          Bias:
+                        </span>{" "}
+                        {s.biasSnippet || "No bias summary available."}
+                      </p>
+                      <p className="text-[11px] text-emerald-300">
+                        <span className="font-semibold text-emerald-400">
+                          Scenario:
+                        </span>{" "}
+                        {s.nextMoveSnippet ||
+                          "No scenario summary available yet."}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] text-zinc-500">
+                Once you have analysed a few pairs, this section will list them
+                here and show which ones look closest to an A plus setup. This
+                is for study and planning only, not financial advice.
+              </p>
+            )}
           </section>
         </main>
       </div>
