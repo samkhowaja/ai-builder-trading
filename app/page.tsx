@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 type ModelProfile = {
-  id: number;
-  name: string;
+  id: string;
+  name: "swing" | "intraday" | "scalping" | string;
   category: "swing" | "intraday" | "scalping";
   timeframes: string;
   duration: string;
-  description: string;
+  description: string | null;
 };
 
 export default function Home() {
@@ -19,58 +20,77 @@ export default function Home() {
     "channel" | "playlist" | "video"
   >("channel");
   const [sourceUrl, setSourceUrl] = useState("https://youtube.com/@waqarasim");
-  const [models, setModels] = useState<ModelProfile[]>([
-    {
-      id: 1,
-      name: "Swing – H4/H1 Liquidity + FVG",
-      category: "swing",
-      timeframes: "H4, H1",
-      duration: "1–3 days",
-      description:
-        "Wait for liquidity grab on H4/H1, FVG + BOS, enter on retrace.",
-    },
-    {
-      id: 2,
-      name: "Intraday – London/NY FVG",
-      category: "intraday",
-      timeframes: "M15, M5",
-      duration: "2–6 hours",
-      description:
-        "Use London or NY session FVGs after liquidity sweep + BOS.",
-    },
-    {
-      id: 3,
-      name: "Scalping – M5/M1 Impulse",
-      category: "scalping",
-      timeframes: "M5, M1",
-      duration: "5–30 minutes",
-      description: "Quick M1/M5 entries after stop grab and micro FVG.",
-    },
-  ]);
+
+  const [models, setModels] = useState<ModelProfile[]>([]);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [savingModel, setSavingModel] = useState(false);
 
   const [newModel, setNewModel] = useState<Partial<ModelProfile>>({
     category: "scalping",
   });
 
-  const addModel = () => {
+  // Load models from Supabase on first render
+  useEffect(() => {
+    const loadModels = async () => {
+      setLoadingModels(true);
+      const { data, error } = await supabase
+        .from("models")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("Error loading models:", error);
+      } else if (data) {
+        setModels(
+          data.map((row: any) => ({
+            id: row.id,
+            name: row.name,
+            category: row.category,
+            timeframes: row.timeframes,
+            duration: row.duration,
+            description: row.description,
+          }))
+        );
+      }
+      setLoadingModels(false);
+    };
+
+    loadModels();
+  }, []);
+
+  const addModel = async () => {
     if (!newModel.name || !newModel.timeframes || !newModel.duration) return;
 
-    setModels((prev) => [
-      ...prev,
-      {
-        id: prev.length + 1,
-        name: newModel.name as string,
-        category: (newModel.category || "scalping") as
-          | "swing"
-          | "intraday"
-          | "scalping",
-        timeframes: newModel.timeframes as string,
-        duration: newModel.duration as string,
-        description: newModel.description || "",
-      },
-    ]);
+    setSavingModel(true);
 
-    setNewModel({ category: "scalping" });
+    const { data, error } = await supabase
+      .from("models")
+      .insert({
+        name: newModel.name,
+        category: newModel.category || "scalping",
+        timeframes: newModel.timeframes,
+        duration: newModel.duration,
+        description: newModel.description ?? null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error saving model:", error);
+    } else if (data) {
+      const saved: ModelProfile = {
+        id: data.id,
+        name: data.name,
+        category: data.category,
+        timeframes: data.timeframes,
+        duration: data.duration,
+        description: data.description,
+      };
+      setModels((prev) => [saved, ...prev]);
+      setNewModel({ category: "scalping" });
+    }
+
+    setSavingModel(false);
   };
 
   return (
@@ -82,11 +102,11 @@ export default function Home() {
             AI Builder – Entry Model Lab
           </h1>
           <span className="text-xs sm:text-sm text-slate-400">
-            v0.1 – UI only (no AI yet)
+            v0.2 – Supabase connected
           </span>
         </header>
 
-        {/* Project + Teacher */}
+        {/* Project & Teacher */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
           <h2 className="text-lg font-semibold mb-1">Project &amp; Teacher</h2>
 
@@ -162,41 +182,49 @@ export default function Home() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <h2 className="text-lg font-semibold">Model Profiles</h2>
             <span className="text-xs text-slate-400">
-              Define Swing / Intraday / Scalping templates
+              Stored in Supabase (shared across devices)
             </span>
           </div>
 
           <div className="grid md:grid-cols-[2fr,1.3fr] gap-4">
             {/* Existing models list */}
             <div className="space-y-3">
-              {models.map((m) => (
-                <div
-                  key={m.id}
-                  className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-medium text-sm sm:text-base">
-                      {m.name}
-                    </h3>
-                    <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
-                      {m.category}
-                    </span>
+              {loadingModels ? (
+                <p className="text-xs text-slate-400">Loading models...</p>
+              ) : models.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  No models yet. Add one on the right.
+                </p>
+              ) : (
+                models.map((m) => (
+                  <div
+                    key={m.id}
+                    className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-medium text-sm sm:text-base">
+                        {m.name}
+                      </h3>
+                      <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
+                        {m.category}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs text-slate-400">
+                      <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-800">
+                        TF: {m.timeframes}
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-800">
+                        Hold: {m.duration}
+                      </span>
+                    </div>
+                    {m.description && (
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        {m.description}
+                      </p>
+                    )}
                   </div>
-                  <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-                    <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-800">
-                      TF: {m.timeframes}
-                    </span>
-                    <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-800">
-                      Hold: {m.duration}
-                    </span>
-                  </div>
-                  {m.description && (
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      {m.description}
-                    </p>
-                  )}
-                </div>
-              ))}
+                ))
+              )}
             </div>
 
             {/* Add new model form */}
@@ -291,16 +319,17 @@ export default function Home() {
 
               <button
                 onClick={addModel}
-                className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition"
+                disabled={savingModel}
+                className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                Add model
+                {savingModel ? "Saving..." : "Add model"}
               </button>
             </div>
           </div>
         </section>
 
         <footer className="text-xs text-slate-500 text-center pb-4">
-          Next steps: connect Supabase DB, then YouTube + AI.
+          Next steps: add projects table + YouTube ingestion.
         </footer>
       </div>
     </main>
