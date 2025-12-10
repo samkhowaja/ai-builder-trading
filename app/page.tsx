@@ -115,6 +115,11 @@ export default function Home() {
   const [aiPlan, setAiPlan] = useState<string | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
 
+  // AI suggest-model-from-video
+  const [suggestingFromVideoId, setSuggestingFromVideoId] = useState<
+    string | null
+  >(null);
+
   const currentProject =
     projects.find((p) => p.id === currentProjectId) || null;
 
@@ -495,7 +500,7 @@ export default function Home() {
     setAiPlan(null);
   };
 
-  // ---------- AI study plan ----------
+  // ---------- AI: study plan ----------
 
   const generateStudyPlan = async () => {
     if (!currentProjectId) {
@@ -535,6 +540,54 @@ export default function Home() {
       alert("Network error while generating study plan.");
     } finally {
       setLoadingPlan(false);
+    }
+  };
+
+  // ---------- AI: suggest model from video ----------
+
+  const suggestModelFromVideo = async (video: Video) => {
+    if (!video.id) return;
+    setSuggestingFromVideoId(video.id);
+
+    try {
+      const res = await fetch("/api/suggest-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: video.id }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("Suggest model error:", data);
+        alert("Failed to suggest model from this video.");
+        setSuggestingFromVideoId(null);
+        return;
+      }
+
+      const data = await res.json();
+      const s = data.suggestion || {};
+
+      setNewModel({
+        name: s.name || video.title,
+        category:
+          s.category === "swing" || s.category === "intraday" || s.category === "scalping"
+            ? (s.category as "swing" | "intraday" | "scalping")
+            : "scalping",
+        timeframes: s.timeframes || "",
+        duration: s.duration || "",
+        description: s.description || video.notes || "",
+      });
+
+      // Scroll to entry model form (nice UX)
+      const formEl = document.getElementById("entry-model-form");
+      if (formEl) {
+        formEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } catch (err) {
+      console.error("Suggest model fetch error:", err);
+      alert("Network error while suggesting model.");
+    } finally {
+      setSuggestingFromVideoId(null);
     }
   };
 
@@ -751,7 +804,10 @@ export default function Home() {
             </div>
 
             {/* add form */}
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-3">
+            <div
+              id="entry-model-form"
+              className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-3"
+            >
               <h3 className="font-medium text-sm sm:text-base">
                 Add entry model
               </h3>
@@ -888,11 +944,11 @@ export default function Home() {
                     key={v.id}
                     className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <h3 className="font-medium text-sm sm:text-base">
                         {v.title}
                       </h3>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <a
                           href={v.url}
                           target="_blank"
@@ -901,6 +957,17 @@ export default function Home() {
                         >
                           Open on YouTube
                         </a>
+                        <button
+                          onClick={() => suggestModelFromVideo(v)}
+                          disabled={
+                            suggestingFromVideoId === v.id || !currentProject
+                          }
+                          className="text-[10px] px-2 py-1 rounded-full border border-sky-500/70 text-sky-300 hover:bg-sky-500/10 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {suggestingFromVideoId === v.id
+                            ? "Suggesting…"
+                            : "Suggest model"}
+                        </button>
                         <button
                           onClick={() => deleteVideo(v.id)}
                           className="text-[10px] px-2 py-1 rounded-full border border-red-500/60 text-red-300 hover:bg-red-500/10 transition"
