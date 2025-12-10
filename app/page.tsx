@@ -5,102 +5,69 @@ import { supabase } from "../lib/supabaseClient";
 
 type TeacherType = "channel" | "playlist" | "video";
 
-type Project = {
+interface Project {
   id: string;
   name: string;
-  teacher_type: TeacherType;
-  source_url: string;
-};
+  teacher_type: string | null;
+  source_url: string | null;
+  created_at: string;
+}
 
-type ModelProfile = {
+interface Model {
   id: string;
   project_id: string;
   name: string;
-  category: "swing" | "intraday" | "scalping";
-  timeframes: string;
-  duration: string;
+  category: string | null;
+  timeframes: string | null;
+  duration: string | null;
   description: string | null;
-};
+  created_at: string;
+}
 
-type Video = {
+interface Video {
   id: string;
   project_id: string;
   title: string;
-  youtube_id: string;
   url: string;
   notes: string | null;
-};
-
-type LabelProps = { text: string; hint: string };
-
-// Small label + "?" hint icon
-function FieldLabel({ text, hint }: LabelProps) {
-  return (
-    <div className="flex items-center gap-1 text-xs text-slate-300">
-      <span>{text}</span>
-      <span
-        className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-800 text-[10px] text-slate-400 cursor-help"
-        title={hint}
-      >
-        ?
-      </span>
-    </div>
-  );
+  created_at: string;
 }
 
-// Extract YouTube video ID from pretty much any YouTube URL
-const extractYouTubeId = (url: string): string | null => {
-  try {
-    const u = new URL(url.trim());
-
-    // Standard watch URL: ?v=ID
-    const vParam = u.searchParams.get("v");
-    if (vParam) return vParam;
-
-    // Short URL: youtu.be/ID
-    if (u.hostname.includes("youtu.be")) {
-      return u.pathname.replace("/", "");
-    }
-
-    // Shorts or live: /shorts/ID /live/ID
-    const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length >= 2 && (parts[0] === "shorts" || parts[0] === "live")) {
-      return parts[1];
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-};
+type ModelCategory = "swing" | "intraday" | "scalping";
 
 export default function Home() {
-  // Workspaces (projects)
+  // Workspaces / projects
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [loadingProjects, setLoadingProjects] = useState(false);
 
-  // Workspace form fields
-  const [projectName, setProjectName] = useState("");
+  // Workspace form
+  const [workspaceName, setWorkspaceName] = useState("");
   const [teacherType, setTeacherType] = useState<TeacherType>("channel");
   const [sourceUrl, setSourceUrl] = useState("");
 
-  // Models + videos
-  const [models, setModels] = useState<ModelProfile[]>([]);
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [loadingModels, setLoadingModels] = useState(true);
-  const [loadingVideos, setLoadingVideos] = useState(true);
+  // Entry models
+  const [models, setModels] = useState<Model[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
 
-  // Saving flags
-  const [savingProject, setSavingProject] = useState(false);
-  const [savingModel, setSavingModel] = useState(false);
-  const [savingVideo, setSavingVideo] = useState(false);
-
-  // New model form
-  const [newModel, setNewModel] = useState<Partial<ModelProfile>>({
+  const [newModel, setNewModel] = useState<{
+    name: string;
+    category: ModelCategory;
+    timeframes: string;
+    duration: string;
+    description: string;
+  }>({
+    name: "",
     category: "scalping",
+    timeframes: "",
+    duration: "",
+    description: "",
   });
 
-  // New video form
+  // Study videos
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
+
   const [newVideo, setNewVideo] = useState<{
     title: string;
     url: string;
@@ -120,399 +87,330 @@ export default function Home() {
     string | null
   >(null);
 
+  // AI quiz for one model
+  const [quizModelId, setQuizModelId] = useState<string | null>(null);
+  const [quiz, setQuiz] = useState<
+    { question: string; answer: string }[] | null
+  >(null);
+  const [loadingQuiz, setLoadingQuiz] = useState(false);
+
   const currentProject =
     projects.find((p) => p.id === currentProjectId) || null;
 
-  // ---------- load helpers ----------
+  // ---------- helpers to load data ----------
 
-  const loadModelsForProject = async (projectId: string) => {
+  const loadModels = async (projectId: string) => {
     setLoadingModels(true);
-    const { data, error } = await supabase
-      .from("models")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("models")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: true });
 
-    if (error) {
-      console.error("Error loading models:", error);
-      setModels([]);
-    } else if (data) {
-      setModels(
-        data.map((row: any) => ({
-          id: row.id,
-          project_id: row.project_id,
-          name: row.name,
-          category: row.category,
-          timeframes: row.timeframes,
-          duration: row.duration,
-          description: row.description,
-        }))
-      );
+      if (error) {
+        console.error("loadModels error:", error);
+        setModels([]);
+        return;
+      }
+      setModels(data || []);
+    } finally {
+      setLoadingModels(false);
     }
-    setLoadingModels(false);
   };
 
-  const loadVideosForProject = async (projectId: string) => {
+  const loadVideos = async (projectId: string) => {
     setLoadingVideos(true);
-    const { data, error } = await supabase
-      .from("videos")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from("videos")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: true });
 
-    if (error) {
-      console.error("Error loading videos:", error);
-      setVideos([]);
-    } else if (data) {
-      setVideos(
-        data.map((row: any) => ({
-          id: row.id,
-          project_id: row.project_id,
-          title: row.title,
-          youtube_id: row.youtube_id,
-          url: row.url,
-          notes: row.notes,
-        }))
-      );
+      if (error) {
+        console.error("loadVideos error:", error);
+        setVideos([]);
+        return;
+      }
+      setVideos(data || []);
+    } finally {
+      setLoadingVideos(false);
     }
-    setLoadingVideos(false);
   };
 
-  // ---------- initial load ----------
+  const loadProjects = async () => {
+    setLoadingProjects(true);
+    try {
+      const { data, error } = await supabase
+        .from("projects")
+        .select("*")
+        .order("created_at", { ascending: true });
 
+      if (error) {
+        console.error("loadProjects error:", error);
+        setProjects([]);
+        return;
+      }
+
+      const list = data || [];
+      setProjects(list);
+
+      if (!currentProjectId && list.length > 0) {
+        setCurrentProjectId(list[0].id);
+      }
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
+
+  // ---------- effects ----------
+
+  // Initial load of projects, then models/videos for first project
   useEffect(() => {
     const init = async () => {
-      try {
-        setLoadingModels(true);
-        setLoadingVideos(true);
-
-        const { data: projectsData, error: projError } = await supabase
-          .from("projects")
-          .select("*")
-          .order("created_at", { ascending: true });
-
-        if (projError) {
-          console.error("Error loading projects:", projError);
-          return;
-        }
-
-        let list: Project[] = (projectsData as Project[]) || [];
-        let current: Project | null = list[0] || null;
-
-        // If no workspace yet, create default Waqar one
-        if (!current) {
-          const { data: inserted, error: insertError } = await supabase
-            .from("projects")
-            .insert({
-              name: "Waqar Asim EURUSD Entry Models",
-              teacher_type: "channel",
-              source_url: "https://youtube.com/@waqarasim",
-            })
-            .select()
-            .single();
-
-          if (insertError) {
-            console.error("Error creating default project:", insertError);
-            return;
-          }
-
-          current = inserted as Project;
-          list = [current];
-        }
-
-        setProjects(list);
-        setCurrentProjectId(current.id);
-        setProjectName(current.name);
-        setTeacherType(current.teacher_type);
-        setSourceUrl(current.source_url);
-
-        await loadModelsForProject(current.id);
-        await loadVideosForProject(current.id);
-      } finally {
-        setLoadingModels(false);
-        setLoadingVideos(false);
-      }
+      await loadProjects();
     };
-
     init();
   }, []);
 
-  // ---------- workspace actions ----------
-
-  const handleProjectChange = async (projectId: string) => {
-    setCurrentProjectId(projectId);
-    const proj = projects.find((p) => p.id === projectId);
-    if (proj) {
-      setProjectName(proj.name);
-      setTeacherType(proj.teacher_type);
-      setSourceUrl(proj.source_url);
-    }
-    await loadModelsForProject(projectId);
-    await loadVideosForProject(projectId);
-    setAiPlan(null); // reset AI plan when switching
-  };
-
-  const createProject = async () => {
-    setSavingProject(true);
-    const defaultName = `New Teacher ${projects.length + 1}`;
-    const { data, error } = await supabase
-      .from("projects")
-      .insert({
-        name: defaultName,
-        teacher_type: "channel",
-        source_url: "",
-      })
-      .select()
-      .single();
-
-    if (error) {
-      alert("Supabase project insert error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error creating project:", error);
-      setSavingProject(false);
-      return;
-    }
-
-    const inserted = data as Project;
-    setProjects((prev) => [...prev, inserted]);
-    setCurrentProjectId(inserted.id);
-    setProjectName(inserted.name);
-    setTeacherType(inserted.teacher_type);
-    setSourceUrl(inserted.source_url);
-    setModels([]);
-    setVideos([]);
-    setAiPlan(null);
-    setSavingProject(false);
-  };
-
-  const saveProjectDetails = async () => {
-    if (!currentProject) return;
-    setSavingProject(true);
-
-    const { data, error } = await supabase
-      .from("projects")
-      .update({
-        name: projectName,
-        teacher_type: teacherType,
-        source_url: sourceUrl,
-      })
-      .eq("id", currentProject.id)
-      .select()
-      .single();
-
-    if (error) {
-      alert("Supabase project update error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error updating project:", error);
-      setSavingProject(false);
-      return;
-    }
-
-    const updated = data as Project;
-    setProjects((prev) =>
-      prev.map((p) => (p.id === updated.id ? updated : p))
-    );
-    setSavingProject(false);
-  };
-
-  const deleteCurrentProject = async () => {
-    if (!currentProject) return;
-
-    if (projects.length <= 1) {
-      alert("Keep at least one workspace. Create another one first.");
-      return;
-    }
-
-    const confirmed = confirm(
-      `Delete workspace "${currentProject.name}" and everything inside it?`
-    );
-    if (!confirmed) return;
-
-    setSavingProject(true);
-
-    const { error: projError } = await supabase
-      .from("projects")
-      .delete()
-      .eq("id", currentProject.id);
-
-    if (projError) {
-      alert(
-        "Supabase project delete error:\n" + JSON.stringify(projError, null, 2)
-      );
-      console.error("Error deleting project:", projError);
-      setSavingProject(false);
-      return;
-    }
-
-    const remaining = projects.filter((p) => p.id !== currentProject.id);
-    setProjects(remaining);
-
-    const next = remaining[0] || null;
-    if (next) {
-      setCurrentProjectId(next.id);
-      setProjectName(next.name);
-      setTeacherType(next.teacher_type);
-      setSourceUrl(next.source_url);
-      await loadModelsForProject(next.id);
-      await loadVideosForProject(next.id);
-    } else {
-      setCurrentProjectId(null);
-      setProjectName("");
-      setTeacherType("channel");
+  // When current project changes, sync form + load its models / videos
+  useEffect(() => {
+    if (!currentProjectId) {
+      setWorkspaceName("");
       setSourceUrl("");
       setModels([]);
       setVideos([]);
+      return;
     }
 
+    const p = projects.find((x) => x.id === currentProjectId);
+    if (p) {
+      setWorkspaceName(p.name || "");
+      setSourceUrl(p.source_url || "");
+      const tt = (p.teacher_type || "channel") as TeacherType;
+      setTeacherType(
+        tt === "channel" || tt === "playlist" || tt === "video"
+          ? tt
+          : "channel"
+      );
+    }
+
+    loadModels(currentProjectId);
+    loadVideos(currentProjectId);
+  }, [currentProjectId, projects]);
+
+  // Default quiz model to first model
+  useEffect(() => {
+    if (!quizModelId && models.length > 0) {
+      setQuizModelId(models[0].id);
+    }
+  }, [models, quizModelId]);
+
+  // ---------- workspace actions ----------
+
+  const handleProjectChange = (id: string) => {
+    setCurrentProjectId(id || null);
     setAiPlan(null);
-    setSavingProject(false);
+    setQuiz(null);
+  };
+
+  const handleSaveWorkspace = async () => {
+    const trimmedName = workspaceName.trim();
+    const trimmedUrl = sourceUrl.trim();
+
+    if (!trimmedName) {
+      alert("Workspace name is required.");
+      return;
+    }
+
+    const payload = {
+      name: trimmedName,
+      teacher_type: teacherType,
+      source_url: trimmedUrl || null,
+    };
+
+    try {
+      if (currentProjectId) {
+        const { data, error } = await supabase
+          .from("projects")
+          .update(payload)
+          .eq("id", currentProjectId)
+          .select()
+          .single();
+
+        if (error) {
+          console.error("update project error:", error);
+          alert("Failed to update workspace.");
+          return;
+        }
+
+        setProjects((prev) =>
+          prev.map((p) => (p.id === data.id ? (data as Project) : p))
+        );
+      } else {
+        const { data, error } = await supabase
+          .from("projects")
+          .insert(payload)
+          .select()
+          .single();
+
+        if (error || !data) {
+          console.error("insert project error:", error);
+          alert("Failed to create workspace.");
+          return;
+        }
+
+        setProjects((prev) => [...prev, data as Project]);
+        setCurrentProjectId(data.id);
+      }
+
+      alert("Workspace saved.");
+    } catch (err) {
+      console.error("save workspace exception:", err);
+      alert("Unexpected error while saving workspace.");
+    }
+  };
+
+  const handleCreateNewWorkspace = () => {
+    setCurrentProjectId(null);
+    setWorkspaceName("");
+    setTeacherType("channel");
+    setSourceUrl("");
+    setModels([]);
+    setVideos([]);
+    setAiPlan(null);
+    setQuiz(null);
   };
 
   // ---------- model actions ----------
 
-  const addModel = async () => {
-    if (!currentProject) {
-      alert("Workspace not loaded yet. Please wait and try again.");
+  const handleAddModel = async () => {
+    if (!currentProjectId) {
+      alert("Select or create a workspace first.");
       return;
     }
 
-    if (!newModel.name || !newModel.timeframes || !newModel.duration) {
-      alert("Fill in name, timeframes and duration for the model.");
+    const name = newModel.name.trim();
+    if (!name) {
+      alert("Model name is required.");
       return;
     }
 
-    setSavingModel(true);
+    try {
+      const { data, error } = await supabase
+        .from("models")
+        .insert({
+          project_id: currentProjectId,
+          name,
+          category: newModel.category,
+          timeframes: newModel.timeframes.trim() || null,
+          duration: newModel.duration.trim() || null,
+          description: newModel.description.trim() || null,
+        })
+        .select()
+        .single();
 
-    const { data, error } = await supabase
-      .from("models")
-      .insert({
-        project_id: currentProject.id,
-        name: newModel.name,
-        category: newModel.category || "scalping",
-        timeframes: newModel.timeframes,
-        duration: newModel.duration,
-        description: newModel.description ?? null,
-      })
-      .select()
-      .single();
+      if (error || !data) {
+        console.error("insert model error:", error);
+        alert("Failed to add entry model.");
+        return;
+      }
 
-    if (error) {
-      alert("Supabase insert error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error saving model:", error);
-    } else if (data) {
-      const saved: ModelProfile = {
-        id: data.id,
-        project_id: data.project_id,
-        name: data.name,
-        category: data.category,
-        timeframes: data.timeframes,
-        duration: data.duration,
-        description: data.description,
-      };
-      setModels((prev) => [saved, ...prev]);
-      setNewModel({ category: "scalping" });
-      setAiPlan(null);
+      setModels((prev) => [...prev, data as Model]);
+      setNewModel({
+        name: "",
+        category: newModel.category,
+        timeframes: "",
+        duration: "",
+        description: "",
+      });
+    } catch (err) {
+      console.error("add model exception:", err);
+      alert("Unexpected error while adding model.");
     }
-
-    setSavingModel(false);
   };
 
-  const deleteModel = async (id: string) => {
-    const confirmed = confirm("Delete this entry model?");
-    if (!confirmed) return;
-
-    const { error } = await supabase.from("models").delete().eq("id", id);
-
-    if (error) {
-      alert("Supabase delete error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error deleting model:", error);
-      return;
+  const handleDeleteModel = async (id: string) => {
+    if (!confirm("Delete this entry model?")) return;
+    try {
+      const { error } = await supabase.from("models").delete().eq("id", id);
+      if (error) {
+        console.error("delete model error:", error);
+        alert("Failed to delete model.");
+        return;
+      }
+      setModels((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      console.error("delete model exception:", err);
+      alert("Unexpected error while deleting model.");
     }
-
-    setModels((prev) => prev.filter((m) => m.id !== id));
-    setAiPlan(null);
   };
 
   // ---------- video actions ----------
 
-  const addVideo = async () => {
-    if (!currentProject) {
-      alert("Workspace not loaded yet. Please wait and try again.");
+  const handleAddVideo = async () => {
+    if (!currentProjectId) {
+      alert("Select or create a workspace first.");
       return;
     }
 
-    if (!newVideo.title.trim() || !newVideo.url.trim()) {
-      alert("Fill in title and YouTube URL.");
+    const title = newVideo.title.trim();
+    const url = newVideo.url.trim();
+
+    if (!title || !url) {
+      alert("Video title and URL are required.");
       return;
     }
 
-    const youtubeId = extractYouTubeId(newVideo.url);
-    if (!youtubeId) {
-      alert("Could not detect YouTube video ID. Please check the URL.");
-      return;
-    }
+    try {
+      const { data, error } = await supabase
+        .from("videos")
+        .insert({
+          project_id: currentProjectId,
+          title,
+          url,
+          notes: newVideo.notes.trim() || null,
+        })
+        .select()
+        .single();
 
-    setSavingVideo(true);
+      if (error || !data) {
+        console.error("insert video error:", error);
+        alert("Failed to add study video.");
+        return;
+      }
 
-    const { data, error } = await supabase
-      .from("videos")
-      .insert({
-        project_id: currentProject.id,
-        title: newVideo.title.trim(),
-        youtube_id: youtubeId,
-        url: newVideo.url.trim(),
-        notes: newVideo.notes.trim() || null,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      alert("Supabase video insert error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error saving video:", error);
-    } else if (data) {
-      const saved: Video = {
-        id: data.id,
-        project_id: data.project_id,
-        title: data.title,
-        youtube_id: data.youtube_id,
-        url: data.url,
-        notes: data.notes,
-      };
-      setVideos((prev) => [saved, ...prev]);
+      setVideos((prev) => [...prev, data as Video]);
       setNewVideo({ title: "", url: "", notes: "" });
-      setAiPlan(null);
+    } catch (err) {
+      console.error("add video exception:", err);
+      alert("Unexpected error while adding video.");
     }
-
-    setSavingVideo(false);
   };
 
-  const deleteVideo = async (id: string) => {
-    const confirmed = confirm("Remove this video from the workspace?");
-    if (!confirmed) return;
-
-    const { error } = await supabase.from("videos").delete().eq("id", id);
-
-    if (error) {
-      alert("Supabase video delete error:\n" + JSON.stringify(error, null, 2));
-      console.error("Error deleting video:", error);
-      return;
+  const handleDeleteVideo = async (id: string) => {
+    if (!confirm("Delete this study video?")) return;
+    try {
+      const { error } = await supabase.from("videos").delete().eq("id", id);
+      if (error) {
+        console.error("delete video error:", error);
+        alert("Failed to delete video.");
+        return;
+      }
+      setVideos((prev) => prev.filter((v) => v.id !== id));
+    } catch (err) {
+      console.error("delete video exception:", err);
+      alert("Unexpected error while deleting video.");
     }
-
-    setVideos((prev) => prev.filter((v) => v.id !== id));
-    setAiPlan(null);
   };
 
   // ---------- AI: study plan ----------
 
   const generateStudyPlan = async () => {
     if (!currentProjectId) {
-      alert("Workspace not loaded yet.");
+      alert("Select a workspace first.");
       return;
-    }
-
-    if (models.length === 0 || videos.length === 0) {
-      const ok = confirm(
-        "You have no entry models or no videos. AI will still try, but the plan may be weak. Continue?"
-      );
-      if (!ok) return;
     }
 
     setLoadingPlan(true);
@@ -527,16 +425,16 @@ export default function Home() {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        console.error("Study plan error:", data);
+        console.error("study plan error:", data);
         alert("Failed to generate study plan.");
         setLoadingPlan(false);
         return;
       }
 
       const data = await res.json();
-      setAiPlan(data.plan || "No plan text returned.");
+      setAiPlan(data.plan || "");
     } catch (err) {
-      console.error("Study plan fetch error:", err);
+      console.error("study plan fetch error:", err);
       alert("Network error while generating study plan.");
     } finally {
       setLoadingPlan(false);
@@ -571,7 +469,7 @@ export default function Home() {
         s.overview ||
         s.description ||
         video.notes ||
-        "Entry model derived from this study video.";
+        "Entry model derived from the study video.";
 
       const entryRules: string[] = Array.isArray(s.entry_rules)
         ? s.entry_rules
@@ -582,7 +480,6 @@ export default function Home() {
       const tpRules: string[] = Array.isArray(s.tp_rules) ? s.tp_rules : [];
 
       const lines: string[] = [];
-
       lines.push(overview.trim());
 
       if (entryRules.length > 0) {
@@ -608,20 +505,21 @@ export default function Home() {
 
       const finalDescription = lines.join("\n\n");
 
+      const category: ModelCategory =
+        s.category === "swing" ||
+        s.category === "intraday" ||
+        s.category === "scalping"
+          ? s.category
+          : "scalping";
+
       setNewModel({
         name: s.name || video.title,
-        category:
-          s.category === "swing" ||
-          s.category === "intraday" ||
-          s.category === "scalping"
-            ? (s.category as "swing" | "intraday" | "scalping")
-            : "scalping",
+        category,
         timeframes: s.timeframes || "",
         duration: s.duration || "",
         description: finalDescription,
       });
 
-      // Scroll to entry model form (nice UX)
       const formEl = document.getElementById("entry-model-form");
       if (formEl) {
         formEl.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -634,43 +532,80 @@ export default function Home() {
     }
   };
 
+  // ---------- AI: quiz for one model ----------
 
-  // ---------- UI ----------
+  const generateQuizForModel = async () => {
+    if (!quizModelId) {
+      alert("Select an entry model first.");
+      return;
+    }
+
+    setLoadingQuiz(true);
+    setQuiz(null);
+
+    try {
+      const res = await fetch("/api/quiz-model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: quizModelId }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("Quiz error:", data);
+        alert("Failed to generate quiz for this model.");
+        setLoadingQuiz(false);
+        return;
+      }
+
+      const data = await res.json();
+      setQuiz(data.questions || []);
+    } catch (err) {
+      console.error("Quiz fetch error:", err);
+      alert("Network error while generating quiz.");
+    } finally {
+      setLoadingQuiz(false);
+    }
+  };
+
+  // ---------- render ----------
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
-        {/* HEADER */}
-        <header className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-semibold">
-            AI Builder – Entry Model Lab
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-400 max-w-2xl">
-            This is your control panel. Later, AI will auto-fill this from a
-            YouTube channel. For now you can define your own workspace, entry
-            models and study videos.
-          </p>
+      <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-semibold">
+              AI Builder – Entry Model Lab
+            </h1>
+            <p className="text-xs text-slate-400 mt-1">
+              One workspace per mentor/strategy. Build clean entry models and
+              study plans from their YouTube content.
+            </p>
+          </div>
+          <button
+            onClick={handleCreateNewWorkspace}
+            className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs hover:bg-slate-800"
+          >
+            + New workspace
+          </button>
         </header>
 
         {/* WORKSPACE / TEACHER */}
         <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Teacher workspace</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                One workspace = one mentor or strategy (e.g. Waqar EURUSD).
-              </p>
-            </div>
-
-            {/* Workspace selector + advanced options */}
-            <div className="flex flex-col items-start sm:items-end gap-2 text-xs sm:text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-slate-400">Workspace:</span>
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            <div className="flex-1 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <span className="text-xs text-slate-400">Workspace</span>
                 <select
-                  className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500 min-w-[200px]"
                   value={currentProjectId || ""}
                   onChange={(e) => handleProjectChange(e.target.value)}
+                  disabled={loadingProjects || projects.length === 0}
                 >
+                  {projects.length === 0 && (
+                    <option value="">No workspaces yet</option>
+                  )}
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
@@ -679,213 +614,176 @@ export default function Home() {
                 </select>
               </div>
 
-              <details className="text-[11px] text-slate-500">
-                <summary className="cursor-pointer select-none">
-                  Advanced workspace options
-                </summary>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    onClick={createProject}
-                    disabled={savingProject}
-                    className="rounded-xl border border-slate-700 px-3 py-1 bg-slate-950 hover:bg-slate-800 transition disabled:opacity-60"
-                  >
-                    {savingProject ? "Creating…" : "New workspace"}
-                  </button>
-                  <button
-                    onClick={deleteCurrentProject}
-                    disabled={
-                      savingProject || !currentProject || projects.length <= 1
-                    }
-                    className="rounded-xl border border-red-500/70 px-3 py-1 text-red-300 bg-slate-950 hover:bg-red-500/10 transition disabled:opacity-40"
-                  >
-                    Delete current
-                  </button>
+              <div className="space-y-2">
+                <label className="text-xs text-slate-300">
+                  Workspace name
+                </label>
+                <input
+                  type="text"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="e.g. Waqar Asim EURUSD Entry Models"
+                  value={workspaceName}
+                  onChange={(e) => setWorkspaceName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <span className="text-xs text-slate-300">Teacher type</span>
+                <div className="inline-flex rounded-xl bg-slate-950 border border-slate-700 p-1 text-[11px]">
+                  {(["channel", "playlist", "video"] as TeacherType[]).map(
+                    (t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setTeacherType(t)}
+                        className={`px-3 py-1 rounded-lg ${
+                          teacherType === t
+                            ? "bg-emerald-500 text-slate-950"
+                            : "text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        {t === "channel"
+                          ? "YouTube channel"
+                          : t === "playlist"
+                          ? "Playlist"
+                          : "Single video"}
+                      </button>
+                    )
+                  )}
                 </div>
-              </details>
-            </div>
-          </div>
+              </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <FieldLabel
-                text="Workspace name"
-                hint="How you want to refer to this teacher or strategy, e.g. 'Waqar Asim EURUSD Entry Models'."
-              />
-              <input
-                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <FieldLabel
-                text="Teacher type"
-                hint="Are you learning from a full channel, a playlist, or a single video?"
-              />
-              <div className="flex gap-2 text-xs sm:text-sm">
-                <button
-                  onClick={() => setTeacherType("channel")}
-                  className={`flex-1 rounded-xl border px-2 py-2 ${
-                    teacherType === "channel"
-                      ? "border-emerald-500 bg-emerald-500/10"
-                      : "border-slate-700 bg-slate-950"
-                  }`}
-                >
-                  Channel
-                </button>
-                <button
-                  onClick={() => setTeacherType("playlist")}
-                  className={`flex-1 rounded-xl border px-2 py-2 ${
-                    teacherType === "playlist"
-                      ? "border-emerald-500 bg-emerald-500/10"
-                      : "border-slate-700 bg-slate-950"
-                  }`}
-                >
-                  Playlist
-                </button>
-                <button
-                  onClick={() => setTeacherType("video")}
-                  className={`flex-1 rounded-xl border px-2 py-2 ${
-                    teacherType === "video"
-                      ? "border-emerald-500 bg-emerald-500/10"
-                      : "border-slate-700 bg-slate-950"
-                  }`}
-                >
-                  Single video
-                </button>
+              <div className="space-y-2">
+                <label className="text-xs text-slate-300 flex items-center gap-1">
+                  YouTube source URL
+                  <span className="text-[10px] text-slate-500">
+                    (channel / playlist / video)
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="https://youtube.com/@waqarasim"
+                  value={sourceUrl}
+                  onChange={(e) => setSourceUrl(e.target.value)}
+                />
+                <p className="text-[11px] text-slate-500">
+                  Later we&apos;ll auto-pull videos from here. Right now it&apos;s
+                  just metadata for this workspace.
+                </p>
               </div>
             </div>
-          </div>
 
-          <div className="space-y-2">
-            <FieldLabel
-              text={
-                teacherType === "channel"
-                  ? "YouTube channel URL"
-                  : teacherType === "playlist"
-                  ? "YouTube playlist URL"
-                  : "YouTube video URL"
-              }
-              hint="Paste the main URL for this teacher or playlist. Later, AI will scan this and auto-build the library."
-            />
-            <input
-              className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500"
-              value={sourceUrl}
-              onChange={(e) => setSourceUrl(e.target.value)}
-            />
-            <div className="flex justify-end">
+            <div className="w-full sm:w-48 flex sm:flex-col gap-2">
               <button
-                onClick={saveProjectDetails}
-                disabled={savingProject || !currentProject}
-                className="mt-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={handleSaveWorkspace}
+                className="flex-1 rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition"
               >
-                {savingProject ? "Saving…" : "Save workspace"}
+                Save workspace
               </button>
             </div>
           </div>
         </section>
 
-        {/* ENTRY MODELS */}
-        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-semibold">Entry models (playbook)</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Each entry model is one repeatable setup you want to master,
-                like “H4/H1 liquidity grab + FVG”.
-              </p>
-            </div>
-            <span className="text-xs text-slate-500">
-              Workspace: {currentProject ? currentProject.name : "Loading…"}
-            </span>
-          </div>
-
-          <div className="grid md:grid-cols-[2fr,1.3fr] gap-4">
-            {/* list */}
-            <div className="space-y-3">
-              {loadingModels ? (
-                <p className="text-xs text-slate-400">Loading entry models…</p>
-              ) : models.length === 0 ? (
-                <p className="text-xs text-slate-400">
-                  No entry models yet. Start by adding one on the right.
+        <div className="grid lg:grid-cols-2 gap-4 lg:gap-6 items-start">
+          {/* ENTRY MODELS */}
+          <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-semibold">Entry models</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Each model is one repeatable setup you want to master.
                 </p>
-              ) : (
-                models.map((m) => (
-                  <div
-                    key={m.id}
-                    className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <h3 className="font-medium text-sm sm:text-base">
-                          {m.name}
-                        </h3>
-                        <p className="text-[11px] text-slate-400">
-                          TF: {m.timeframes} • Hold: {m.duration}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
-                          {m.category}
-                        </span>
-                        <button
-                          onClick={() => deleteModel(m.id)}
-                          className="text-[10px] px-2 py-1 rounded-full border border-red-500/60 text-red-300 hover:bg-red-500/10 transition"
-                        >
-                          Delete
-                        </button>
+              </div>
+            </div>
+
+            <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
+              {loadingModels && (
+                <p className="text-xs text-slate-400">Loading entry models…</p>
+              )}
+              {!loadingModels && models.length === 0 && (
+                <p className="text-xs text-slate-500">
+                  No entry models yet. Use the form on the right or AI
+                  suggestions from videos below.
+                </p>
+              )}
+              {models.map((m) => (
+                <div
+                  key={m.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-950/80 p-3 space-y-1"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold">{m.name}</h3>
+                      <div className="flex flex-wrap gap-1 mt-1 text-[10px] text-slate-400">
+                        {m.category && (
+                          <span className="rounded-full border border-slate-700 px-2 py-0.5">
+                            {m.category.toUpperCase()}
+                          </span>
+                        )}
+                        {m.timeframes && (
+                          <span className="rounded-full bg-slate-900 px-2 py-0.5">
+                            TF: {m.timeframes}
+                          </span>
+                        )}
+                        {m.duration && (
+                          <span className="rounded-full bg-slate-900 px-2 py-0.5">
+                            Hold: {m.duration}
+                          </span>
+                        )}
                       </div>
                     </div>
-                    {m.description && (
-                      <p className="text-xs text-slate-300 leading-relaxed">
-                        {m.description}
-                      </p>
-                    )}
+                    <button
+                      onClick={() => handleDeleteModel(m.id)}
+                      className="rounded-full bg-red-500/10 text-red-400 text-[10px] px-2 py-1 hover:bg-red-500/20"
+                    >
+                      Delete
+                    </button>
                   </div>
-                ))
-              )}
+                  {m.description && (
+                    <p className="text-[11px] text-slate-300 whitespace-pre-wrap mt-1">
+                      {m.description}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* ADD ENTRY MODEL FORM */}
+          <section
+            id="entry-model-form"
+            className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-3"
+          >
+            <h2 className="text-lg font-semibold">Add entry model</h2>
+            <p className="text-[11px] text-slate-400">
+              You can type this manually or click &quot;Suggest model&quot; on a
+              study video to auto-fill from AI.
+            </p>
+
+            <div className="space-y-2">
+              <label className="text-xs text-slate-300">Model name</label>
+              <input
+                type="text"
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                placeholder="e.g. London range sweep + NY FVG"
+                value={newModel.name}
+                onChange={(e) =>
+                  setNewModel((prev) => ({ ...prev, name: e.target.value }))
+                }
+              />
             </div>
 
-            {/* add form */}
-            <div
-              id="entry-model-form"
-              className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-3"
-            >
-              <h3 className="font-medium text-sm sm:text-base">
-                Add entry model
-              </h3>
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-2">
-                <FieldLabel
-                  text="Model name"
-                  hint="Give this setup a clear name, e.g. 'Swing – H4/H1 liquidity + FVG'."
-                />
-                <input
-                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
-                  placeholder="e.g. London range sweep + NY FVG"
-                  value={newModel.name || ""}
-                  onChange={(e) =>
-                    setNewModel((prev) => ({ ...prev, name: e.target.value }))
-                  }
-                />
-              </div>
-
-              <div className="space-y-2">
-                <FieldLabel
-                  text="Category"
-                  hint="Rough style of the trade: swing, intraday or scalping."
-                />
+                <label className="text-xs text-slate-300">Category</label>
                 <select
                   className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
-                  value={newModel.category || "scalping"}
+                  value={newModel.category}
                   onChange={(e) =>
                     setNewModel((prev) => ({
                       ...prev,
-                      category: e.target.value as
-                        | "swing"
-                        | "intraday"
-                        | "scalping",
+                      category: e.target.value as ModelCategory,
                     }))
                   }
                 >
@@ -896,14 +794,12 @@ export default function Home() {
               </div>
 
               <div className="space-y-2">
-                <FieldLabel
-                  text="Timeframes"
-                  hint="Write the timeframes you use for this setup, e.g. 'H4, H1' or 'M15, M5'."
-                />
+                <label className="text-xs text-slate-300">Timeframes</label>
                 <input
+                  type="text"
                   className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
-                  placeholder="H4, H1 or M15, M5"
-                  value={newModel.timeframes || ""}
+                  placeholder="e.g. H4, H1 or M15, M5"
+                  value={newModel.timeframes}
                   onChange={(e) =>
                     setNewModel((prev) => ({
                       ...prev,
@@ -912,141 +808,134 @@ export default function Home() {
                   }
                 />
               </div>
-
-              <div className="space-y-2">
-                <FieldLabel
-                  text="Typical hold time"
-                  hint="How long you usually stay in these trades, e.g. '1–3 days' or '2–6 hours'."
-                />
-                <input
-                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
-                  placeholder="e.g. 1–3 days, 2–6 hours…"
-                  value={newModel.duration || ""}
-                  onChange={(e) =>
-                    setNewModel((prev) => ({
-                      ...prev,
-                      duration: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-
-              <div className="space-y-2">
-                <FieldLabel
-                  text="Description (optional)"
-                  hint="In your own words: what’s the logic of this entry? What do you wait for?"
-                />
-                <textarea
-                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500 min-h-[70px]"
-                  placeholder="Summarize the confluences and entry rules."
-                  value={newModel.description || ""}
-                  onChange={(e) =>
-                    setNewModel((prev) => ({
-                      ...prev,
-                      description: e.target.value,
-                    }))
-                  }
-                />
-              </div>
-
-              <button
-                onClick={addModel}
-                disabled={savingModel || !currentProject}
-                className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {savingModel ? "Saving…" : "Add entry model"}
-              </button>
             </div>
-          </div>
-        </section>
 
-        {/* STUDY VIDEOS */}
-        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-semibold">Study videos</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Videos from this teacher that you want to study. Later AI can
-                auto-pull these from the channel; for now you can pick them
-                manually.
-              </p>
+            <div className="space-y-2">
+              <label className="text-xs text-slate-300">Typical hold time</label>
+              <input
+                type="text"
+                className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                placeholder="e.g. 1–3 days, 2–6 hours, 5–30 minutes…"
+                value={newModel.duration}
+                onChange={(e) =>
+                  setNewModel((prev) => ({
+                    ...prev,
+                    duration: e.target.value,
+                  }))
+                }
+              />
             </div>
-          </div>
 
-          <div className="grid md:grid-cols-[2fr,1.3fr] gap-4">
-            {/* list */}
+            <div className="space-y-2">
+              <label className="text-xs text-slate-300">
+                Description (overview + rules)
+              </label>
+              <textarea
+                className="w-full min-h-[120px] rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                placeholder="Overview + entry checklist + SL/TP rules. AI will suggest this when you use “Suggest model”."
+                value={newModel.description}
+                onChange={(e) =>
+                  setNewModel((prev) => ({
+                    ...prev,
+                    description: e.target.value,
+                  }))
+                }
+              />
+            </div>
+
+            <button
+              onClick={handleAddModel}
+              disabled={!currentProjectId}
+              className="mt-2 rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              Add entry model
+            </button>
+          </section>
+        </div>
+
+        {/* STUDY VIDEOS + AI COACH */}
+        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-6">
+          {/* Study videos list + add form */}
+          <div className="grid lg:grid-cols-2 gap-4 lg:gap-6 items-start">
             <div className="space-y-3">
-              {loadingVideos ? (
-                <p className="text-xs text-slate-400">Loading videos…</p>
-              ) : videos.length === 0 ? (
-                <p className="text-xs text-slate-400">
-                  No study videos yet. Add one from YouTube on the right.
-                </p>
-              ) : (
-                videos.map((v) => (
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-semibold">Study videos</h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Videos you want to study for this workspace. AI uses these
+                    to suggest models and training plans.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
+                {loadingVideos && (
+                  <p className="text-xs text-slate-400">Loading videos…</p>
+                )}
+                {!loadingVideos && videos.length === 0 && (
+                  <p className="text-xs text-slate-500">
+                    No study videos yet. Add one on the right.
+                  </p>
+                )}
+                {videos.map((v) => (
                   <div
                     key={v.id}
-                    className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
+                    className="rounded-2xl border border-slate-800 bg-slate-950/80 p-3 space-y-2"
                   >
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                      <h3 className="font-medium text-sm sm:text-base">
-                        {v.title}
-                      </h3>
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex-1">
+                        <h3 className="text-sm font-semibold">{v.title}</h3>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          {v.url}
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-1 text-[10px]">
                         <a
                           href={v.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-[10px] px-2 py-1 rounded-full border border-emerald-500/70 text-emerald-300 hover:bg-emerald-500/10 transition"
+                          className="rounded-full bg-slate-800 px-3 py-1 hover:bg-slate-700 text-center"
                         >
                           Open on YouTube
                         </a>
                         <button
-                          onClick={() => suggestModelFromVideo(v)}
-                          disabled={
-                            suggestingFromVideoId === v.id || !currentProject
-                          }
-                          className="text-[10px] px-2 py-1 rounded-full border border-sky-500/70 text-sky-300 hover:bg-sky-500/10 transition disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {suggestingFromVideoId === v.id
-                            ? "Suggesting…"
-                            : "Suggest model"}
-                        </button>
-                        <button
-                          onClick={() => deleteVideo(v.id)}
-                          className="text-[10px] px-2 py-1 rounded-full border border-red-500/60 text-red-300 hover:bg-red-500/10 transition"
+                          type="button"
+                          onClick={() => handleDeleteVideo(v.id)}
+                          className="rounded-full bg-red-500/10 text-red-400 px-3 py-1 hover:bg-red-500/20"
                         >
                           Delete
                         </button>
                       </div>
                     </div>
-                    <p className="text-[10px] text-slate-500">
-                      Video ID: {v.youtube_id}
-                    </p>
                     {v.notes && (
-                      <p className="text-xs text-slate-300 leading-relaxed">
+                      <p className="text-[11px] text-slate-300">
                         {v.notes}
                       </p>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => suggestModelFromVideo(v)}
+                      disabled={suggestingFromVideoId === v.id}
+                      className="rounded-xl bg-sky-500 text-slate-950 text-[11px] font-semibold px-3 py-1.5 hover:bg-sky-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {suggestingFromVideoId === v.id
+                        ? "Suggesting…"
+                        : "Suggest model"}
+                    </button>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
 
-            {/* add form */}
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-3">
-              <h3 className="font-medium text-sm sm:text-base">
-                Add study video
-              </h3>
-
+            {/* Add study video form */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold">Add study video</h3>
               <div className="space-y-2">
-                <FieldLabel
-                  text="Video title"
-                  hint="A short name so you recognize this video in the list."
-                />
+                <label className="text-xs text-slate-300">Video title</label>
                 <input
+                  type="text"
                   className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
-                  placeholder="e.g. EURUSD London killzone entries"
+                  placeholder="e.g. My exact 1-minute scalping strategy"
                   value={newVideo.title}
                   onChange={(e) =>
                     setNewVideo((prev) => ({ ...prev, title: e.target.value }))
@@ -1055,11 +944,9 @@ export default function Home() {
               </div>
 
               <div className="space-y-2">
-                <FieldLabel
-                  text="YouTube URL"
-                  hint="Paste the full link to the video from YouTube."
-                />
+                <label className="text-xs text-slate-300">YouTube URL</label>
                 <input
+                  type="text"
                   className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
                   placeholder="https://www.youtube.com/watch?v=..."
                   value={newVideo.url}
@@ -1070,13 +957,12 @@ export default function Home() {
               </div>
 
               <div className="space-y-2">
-                <FieldLabel
-                  text="Notes (optional)"
-                  hint="What is this video about or what do you want to focus on when watching?"
-                />
+                <label className="text-xs text-slate-300">
+                  Notes (what you want to learn)
+                </label>
                 <textarea
-                  className="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500 min-h-[70px]"
-                  placeholder="e.g. Focus on how he builds bias on H4/H1 and where he actually enters."
+                  className="w-full min-h-[80px] rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500"
+                  placeholder="e.g. focus on how he builds bias on H4/H1 and executes on M1."
                   value={newVideo.notes}
                   onChange={(e) =>
                     setNewVideo((prev) => ({ ...prev, notes: e.target.value }))
@@ -1085,58 +971,143 @@ export default function Home() {
               </div>
 
               <button
-                onClick={addVideo}
-                disabled={savingVideo || !currentProject}
-                className="w-full rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold py-2 mt-1 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={handleAddVideo}
+                disabled={!currentProjectId}
+                className="mt-1 rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {savingVideo ? "Saving…" : "Add study video"}
+                Add study video
               </button>
             </div>
           </div>
+
+          {/* AI STUDY COACH + QUIZ */}
+          <div className="space-y-4">
+            {/* Study plan */}
+            <section className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold">AI study coach</h2>
+                  <p className="text-[11px] text-slate-400">
+                    Let AI look at your current entry models and study videos
+                    and suggest a short training plan.
+                  </p>
+                </div>
+                <button
+                  onClick={generateStudyPlan}
+                  disabled={loadingPlan || !currentProjectId}
+                  className="rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-1.5 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {loadingPlan ? "Thinking…" : "Generate study plan"}
+                </button>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 min-h-[100px]">
+                {loadingPlan && (
+                  <p className="text-xs text-slate-400">Talking to AI…</p>
+                )}
+                {!loadingPlan && !aiPlan && (
+                  <p className="text-xs text-slate-500">
+                    Click &quot;Generate study plan&quot; after you have at
+                    least 1 entry model and 1 study video in this workspace.
+                  </p>
+                )}
+                {!loadingPlan && aiPlan && (
+                  <pre className="text-xs whitespace-pre-wrap font-mono text-slate-100">
+                    {aiPlan}
+                  </pre>
+                )}
+              </div>
+            </section>
+
+            {/* Quiz */}
+            <section className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold">
+                    Practice mode – quiz on one entry model
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Pick a model and let AI ask you ICT/SMC questions so you
+                    can test how well you really understand it.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    className="rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs outline-none focus:ring-1 focus:ring-emerald-500 min-w-[180px]"
+                    value={quizModelId || ""}
+                    onChange={(e) =>
+                      setQuizModelId(e.target.value || null)
+                    }
+                    disabled={models.length === 0}
+                  >
+                    {models.length === 0 && (
+                      <option value="">No models yet</option>
+                    )}
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={generateQuizForModel}
+                    disabled={loadingQuiz || models.length === 0 || !quizModelId}
+                    className="rounded-xl bg-sky-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-sky-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {loadingQuiz ? "Generating quiz…" : "Generate quiz"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-2 space-y-2">
+                {loadingQuiz && (
+                  <p className="text-xs text-slate-400">Asking questions…</p>
+                )}
+
+                {!loadingQuiz && !quiz && (
+                  <p className="text-xs text-slate-500">
+                    Select a model and generate a quiz to test yourself.
+                  </p>
+                )}
+
+                {!loadingQuiz && quiz && quiz.length === 0 && (
+                  <p className="text-xs text-slate-400">
+                    No questions returned. Try again or pick another model.
+                  </p>
+                )}
+
+                {!loadingQuiz && quiz && quiz.length > 0 && (
+                  <ul className="space-y-3">
+                    {quiz.map((q, idx) => (
+                      <li
+                        key={idx}
+                        className="rounded-xl bg-slate-950 border border-slate-800 p-3"
+                      >
+                        <p className="text-xs font-semibold text-slate-100 mb-1">
+                          Q{idx + 1}. {q.question}
+                        </p>
+                        <details className="text-xs text-slate-300">
+                          <summary className="cursor-pointer text-slate-400">
+                            Show answer
+                          </summary>
+                          <p className="mt-1 whitespace-pre-wrap">
+                            {q.answer || "No answer provided."}
+                          </p>
+                        </details>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </div>
         </section>
 
-        {/* AI STUDY PLAN */}
-        <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-semibold">AI study coach</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                Let AI look at your current entry models and study videos and
-                suggest a short training plan. Later this will be fully
-                automatic using YouTube analysis.
-              </p>
-            </div>
-            <button
-              onClick={generateStudyPlan}
-              disabled={loadingPlan || !currentProjectId}
-              className="rounded-xl bg-emerald-500 text-slate-950 text-xs font-semibold px-4 py-2 hover:bg-emerald-400 transition disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {loadingPlan ? "Thinking…" : "Generate study plan"}
-            </button>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3 sm:p-4 min-h-[100px]">
-            {loadingPlan && (
-              <p className="text-xs text-slate-400">Talking to AI…</p>
-            )}
-            {!loadingPlan && !aiPlan && (
-              <p className="text-xs text-slate-400">
-                Click &quot;Generate study plan&quot; after you have at least 1
-                entry model and 1 study video in this workspace.
-              </p>
-            )}
-            {!loadingPlan && aiPlan && (
-              <pre className="text-xs whitespace-pre-wrap font-mono text-slate-100">
-                {aiPlan}
-              </pre>
-            )}
-          </div>
-        </section>
-
-        <footer className="text-xs text-slate-500 text-center pb-4">
-          Later steps: AI reads this workspace, pulls videos from YouTube,
-          detects entry models automatically, and turns this into an interactive
-          learning coach.
+        <footer className="text-[10px] text-slate-500 text-center pb-6">
+          Later steps: AI will auto-read this workspace, pull videos from
+          YouTube, detect entry models automatically, and turn this into an
+          interactive learning coach.
         </footer>
       </div>
     </main>
