@@ -567,15 +567,58 @@ export default function Home() {
       const data = await res.json();
       const s = data.suggestion || {};
 
+      const overview: string =
+        s.overview ||
+        s.description ||
+        video.notes ||
+        "Entry model derived from this study video.";
+
+      const entryRules: string[] = Array.isArray(s.entry_rules)
+        ? s.entry_rules
+        : [];
+      const stopRules: string[] = Array.isArray(s.stop_rules)
+        ? s.stop_rules
+        : [];
+      const tpRules: string[] = Array.isArray(s.tp_rules) ? s.tp_rules : [];
+
+      const lines: string[] = [];
+
+      lines.push(overview.trim());
+
+      if (entryRules.length > 0) {
+        lines.push(
+          "Entry checklist:",
+          ...entryRules.map((r: string) => `- ${r.trim()}`)
+        );
+      }
+
+      if (stopRules.length > 0) {
+        lines.push(
+          "Stop-loss rules:",
+          ...stopRules.map((r: string) => `- ${r.trim()}`)
+        );
+      }
+
+      if (tpRules.length > 0) {
+        lines.push(
+          "Take-profit rules:",
+          ...tpRules.map((r: string) => `- ${r.trim()}`)
+        );
+      }
+
+      const finalDescription = lines.join("\n\n");
+
       setNewModel({
         name: s.name || video.title,
         category:
-          s.category === "swing" || s.category === "intraday" || s.category === "scalping"
+          s.category === "swing" ||
+          s.category === "intraday" ||
+          s.category === "scalping"
             ? (s.category as "swing" | "intraday" | "scalping")
             : "scalping",
         timeframes: s.timeframes || "",
         duration: s.duration || "",
-        description: s.description || video.notes || "",
+        description: finalDescription,
       });
 
       // Scroll to entry model form (nice UX)
@@ -590,6 +633,7 @@ export default function Home() {
       setSuggestingFromVideoId(null);
     }
   };
+
 
   // ---------- UI ----------
 

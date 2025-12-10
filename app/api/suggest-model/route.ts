@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       notes: video.notes,
     };
 
-    // 2) Ask OpenAI to propose an entry model
+    // 2) Ask OpenAI to propose an ICT/SMC-style entry model
     const client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
@@ -58,7 +58,11 @@ export async function POST(request: Request) {
 You are a trading coach for ICT/SMC style EURUSD trading.
 
 The user gives you ONE study video (title, notes, URL). 
-Your job is to propose ONE trading entry model that could be learned from that video.
+From that, you must propose ONE trading entry model they can practice.
+
+The user trades using ICT / Smart Money Concepts:
+- Use vocabulary like liquidity, inducement, FVG, OB, BOS, SSL/BHL etc. when appropriate.
+- Assume entries are usually built from HTF bias + LTF execution.
 
 Return STRICT JSON ONLY with this exact shape:
 
@@ -67,10 +71,24 @@ Return STRICT JSON ONLY with this exact shape:
   "category": "swing | intraday | scalping",
   "timeframes": "comma-separated timeframes, e.g. 'H4, H1' or 'M15, M5'",
   "duration": "typical hold time, e.g. '1–3 days' or '2–6 hours'",
-  "description": "2–4 sentences describing the logic of the setup"
+  "overview": "2–3 sentences explaining the logic of the setup in ICT/SMC language.",
+  "entry_rules": [
+    "bullet-style entry rule 1",
+    "bullet-style entry rule 2"
+  ],
+  "stop_rules": [
+    "how to place SL, where to invalidate the idea"
+  ],
+  "tp_rules": [
+    "how to take partials and final TP (liquidity levels, HTF POI, RR targets, etc.)"
+  ]
 }
 
-No markdown, no backticks, no extra text – ONLY that JSON object.
+Rules:
+- category must be lowercase: "swing", "intraday", or "scalping".
+- Use **concise** bullet rules that a trader can actually follow.
+- Focus on technical rules only. Do NOT mention psychology, risk warning, or generic advice.
+- Do NOT wrap the JSON in backticks or markdown. Respond with ONLY the JSON object.
 `,
         },
         {
@@ -80,7 +98,7 @@ No markdown, no backticks, no extra text – ONLY that JSON object.
             JSON.stringify(userInfo, null, 2),
         },
       ],
-      max_output_tokens: 500,
+      max_output_tokens: 600,
     });
 
     const rawText = (response as any).output_text ?? "";
@@ -96,9 +114,12 @@ No markdown, no backticks, no extra text – ONLY that JSON object.
         category: "scalping",
         timeframes: "",
         duration: "",
-        description:
+        overview:
           userInfo.notes ||
           "Entry model derived from the study video. Add your own rules here.",
+        entry_rules: [],
+        stop_rules: [],
+        tp_rules: [],
       };
     }
 
@@ -110,6 +131,22 @@ No markdown, no backticks, no extra text – ONLY that JSON object.
       suggestion.category !== "scalping"
     ) {
       suggestion.category = "scalping";
+    }
+
+    if (!Array.isArray(suggestion.entry_rules)) {
+      suggestion.entry_rules = suggestion.entry_rules
+        ? [String(suggestion.entry_rules)]
+        : [];
+    }
+    if (!Array.isArray(suggestion.stop_rules)) {
+      suggestion.stop_rules = suggestion.stop_rules
+        ? [String(suggestion.stop_rules)]
+        : [];
+    }
+    if (!Array.isArray(suggestion.tp_rules)) {
+      suggestion.tp_rules = suggestion.tp_rules
+        ? [String(suggestion.tp_rules)]
+        : [];
     }
 
     return NextResponse.json({ suggestion });
