@@ -13,6 +13,17 @@ type ClipboardImage = {
   previewUrl: string;
 };
 
+type ChecklistItem = {
+  text: string;
+  satisfied: boolean;
+};
+
+type ScreenshotGuide = {
+  title: string;
+  description: string;
+  timeframeHint?: string;
+};
+
 type ChartAnalysis = {
   overview: string;
   htfBias: string;
@@ -20,7 +31,8 @@ type ChartAnalysis = {
   entryPlan: string;
   riskManagement: string;
   redFlags: string;
-  checklist: string[];
+  checklist: ChecklistItem[];
+  screenshotGuides: ScreenshotGuide[];
 };
 
 type AnalyzeResponse = {
@@ -137,8 +149,8 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
           In TradingView: copy a screenshot to clipboard, click in this box, and
-          press <kbd>Ctrl</kbd>+<kbd>V</kbd>. The images will be added to your
-          analysis pool automatically.
+          press Ctrl+V or Cmd+V. The images will be added to your analysis pool
+          automatically.
         </p>
       ) : (
         <div className="mt-2 grid max-h-40 grid-cols-2 gap-2 overflow-auto">
@@ -252,9 +264,9 @@ export default function HomePage() {
       }
       setCandleEnds(saved.candleEnds || {});
       setChecklist(
-        (saved.analysis.checklist || []).map((t) => ({
-          text: t,
-          done: false,
+        (saved.analysis.checklist || []).map((item) => ({
+          text: item.text,
+          done: !!item.satisfied,
         })),
       );
     } catch (e) {
@@ -263,13 +275,13 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
 
-  // When a new analysis arrives, reset checklist from it (if not loaded from saved)
+  // When a new analysis arrives, reset checklist if it is empty
   useEffect(() => {
     if (analysis?.checklist && checklist.length === 0) {
       setChecklist(
-        analysis.checklist.map((text) => ({
-          text,
-          done: false,
+        analysis.checklist.map((item) => ({
+          text: item.text,
+          done: !!item.satisfied,
         })),
       );
     }
@@ -372,9 +384,9 @@ export default function HomePage() {
         setCandleEnds(newCandleEnds);
         setAnalysis(data.analysis);
         setChecklist(
-          data.analysis.checklist.map((text) => ({
-            text,
-            done: false,
+          data.analysis.checklist.map((item) => ({
+            text: item.text,
+            done: !!item.satisfied,
           })),
         );
 
@@ -448,7 +460,7 @@ export default function HomePage() {
                 Trading Companion
               </p>
               <p className="text-[11px] text-zinc-500">
-                Multi-TF chart analyzer & playbook builder
+                Multi-timeframe chart analyzer and playbook builder
               </p>
             </div>
           </div>
@@ -460,7 +472,7 @@ export default function HomePage() {
               href="/builder"
               className="rounded-full px-3 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
             >
-              Models & Learning
+              Models and learning
             </a>
           </nav>
         </div>
@@ -494,7 +506,7 @@ export default function HomePage() {
               ))}
               {!pairs.length && (
                 <p className="text-[11px] text-zinc-500">
-                  Add some pairs below (one per line).
+                  Add some pairs below, one per line.
                 </p>
               )}
             </div>
@@ -563,9 +575,9 @@ export default function HomePage() {
                     {tf}:{" "}
                     {isClosed
                       ? "candle closed – update chart if you want fresh analysis"
-                      : `~${formatRemaining(
+                      : `about ${formatRemaining(
                           remaining,
-                        )} left in current candle (approx)`}
+                        )} left in the current candle (approximate)`}
                   </div>
                 );
               })}
@@ -586,8 +598,8 @@ export default function HomePage() {
               onChange={(e) => setNotes(e.target.value)}
               placeholder={
                 "Example:\n- Tell me the higher timeframe bias and why.\n" +
-                "- Is there liquidity being grabbed here?\n" +
-                "- Where is a high-probability entry with SL/TP idea?"
+                "- Is there liquidity being grabbed here.\n" +
+                "- Where is a high probability entry with SL and TP idea."
               }
             />
           </section>
@@ -632,7 +644,7 @@ export default function HomePage() {
           </section>
         </aside>
 
-        {/* RIGHT COLUMN – Images & Analysis */}
+        {/* RIGHT COLUMN – Images and Analysis */}
         <main className="flex-1 space-y-4">
           {/* Step indicator */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
@@ -655,8 +667,8 @@ export default function HomePage() {
             </div>
             <p className="text-[11px] text-zinc-500">
               Use file upload or paste to add charts. All timeframes are sent
-              together in a single run so the AI sees the full story. Saved
-              analyses are kept per pair even after refresh.
+              together in one run so the AI can see the full story. The latest
+              analysis for each pair is saved even after refresh.
             </p>
           </section>
 
@@ -674,7 +686,8 @@ export default function HomePage() {
                 className="text-xs"
               />
               <p className="text-[11px] text-zinc-500">
-                You can select multiple images at once (e.g. H4, H1, M15, M5).
+                You can select multiple images at once such as H4, H1, M15 and
+                M5.
               </p>
             </div>
 
@@ -706,22 +719,23 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* Ebook-style analysis + checklist */}
+          {/* Ebook-style analysis + checklist + screenshot guides */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-50">
-                  3. Multi-TF playbook for{" "}
+                  3. Multi-timeframe playbook for{" "}
                   <span className="text-emerald-300">{selectedPair}</span>
                 </h2>
                 <p className="text-[11px] text-zinc-500">
                   Structured like a mini ebook: context, liquidity story, entry
-                  plan, risk, red flags, and a checklist you can work through.
+                  plan, risk, red flags, checklist, and screenshot overlay
+                  ideas.
                 </p>
               </div>
               {analysis && (
                 <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-300">
-                  ✅ Saved analysis
+                  Saved analysis
                 </span>
               )}
             </div>
@@ -740,7 +754,7 @@ export default function HomePage() {
                   {/* HTF Bias */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
-                      2. Higher timeframe bias & structure
+                      2. Higher timeframe bias and structure
                     </h3>
                     {renderParagraphs(analysis.htfBias)}
                   </div>
@@ -764,7 +778,7 @@ export default function HomePage() {
                   {/* Risk management */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
-                      5. Risk management & trade handling
+                      5. Risk management and trade handling
                     </h3>
                     {renderParagraphs(analysis.riskManagement)}
                   </div>
@@ -772,7 +786,7 @@ export default function HomePage() {
                   {/* Red flags */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-red-300">
-                      6. Red flags – when NOT to take this setup
+                      6. Red flags – when not to take this setup
                     </h3>
                     {renderParagraphs(analysis.redFlags)}
                   </div>
@@ -785,15 +799,15 @@ export default function HomePage() {
                           ✅ Entry checklist
                         </h3>
                         <p className="text-[11px] text-zinc-500">
-                          Use this as a pre-flight check before you even think
-                          about placing an order.
+                          The AI marks what already looks satisfied. You can
+                          toggle items as you confirm things on your chart.
                         </p>
                       </div>
                       <div className="text-right text-[11px]">
                         <p className="font-semibold text-emerald-300">
                           {completedCount} / {totalCount} checked
                         </p>
-                        <p className="text-zinc-500">tap items to toggle</p>
+                        <p className="text-zinc-500">Tap items to toggle</p>
                       </div>
                     </div>
 
@@ -834,24 +848,64 @@ export default function HomePage() {
 
                     {allDone && (
                       <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
-                        All checklist items are marked as satisfied. That doesn’t
-                        guarantee a winning trade, but it means the setup matches
-                        the conditions you defined. Always follow your own risk
-                        plan.
+                        All checklist items are marked as satisfied. This does
+                        not guarantee a winning trade, but it means the setup
+                        matches the model you defined. Always follow your own
+                        risk plan.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Screenshot overlay guides */}
+                  <div className="mt-3 rounded-lg border border-zinc-800 bg-black/60 p-3">
+                    <h3 className="mb-1 text-[13px] font-semibold text-zinc-100">
+                      🖼 Screenshot overlay ideas
+                    </h3>
+                    <p className="mb-2 text-[11px] text-zinc-500">
+                      Use these as drawing instructions on your screenshots:
+                      boxes for order blocks, arrows for liquidity sweeps, and
+                      labels for entry, stop and target.
+                    </p>
+                    {analysis.screenshotGuides &&
+                    analysis.screenshotGuides.length ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {analysis.screenshotGuides.map((g, idx) => (
+                          <div
+                            key={idx}
+                            className="rounded-md border border-zinc-800 bg-zinc-950/80 p-2"
+                          >
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-[12px] font-semibold text-zinc-100">
+                                {g.title}
+                              </p>
+                              {g.timeframeHint && (
+                                <span className="rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-400">
+                                  {g.timeframeHint}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-zinc-300">
+                              {g.description}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-zinc-500">
+                        No screenshot overlay ideas were generated for this run.
                       </p>
                     )}
                   </div>
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">
-  Once you add charts and click{" "}
-  <span className="font-semibold">Analyze Charts</span>, you will
-  get a structured playbook here: HTF bias, liquidity story,
-  entry plan, risk, red flags, and a checklist you can tick off
-  before taking any trade. The latest analysis for each pair is
-  saved so it survives refresh.
-</p>
-
+                  Once you add charts and click{" "}
+                  <span className="font-semibold">Analyze Charts</span>, you
+                  will get a structured playbook here: higher timeframe bias,
+                  liquidity story, entry plan, risk, red flags, checklist, and
+                  screenshot overlay ideas. The latest analysis for each pair is
+                  saved so it survives refresh.
+                </p>
               )}
             </div>
           </section>

@@ -8,7 +8,7 @@ const client = new OpenAI({
 
 type UploadImage = {
   name: string;
-  dataUrl: string; // data:image/png;base64,....
+  dataUrl: string; // data:image/png;base64,...
 };
 
 type Body = {
@@ -18,6 +18,17 @@ type Body = {
   images: UploadImage[];
 };
 
+type ChecklistItem = {
+  text: string;
+  satisfied: boolean; // true = AI thinks this is already done on the chart
+};
+
+type ScreenshotGuide = {
+  title: string;
+  description: string;
+  timeframeHint?: string; // e.g. "H4", "M15", "overall"
+};
+
 type ChartAnalysis = {
   overview: string;
   htfBias: string;
@@ -25,7 +36,8 @@ type ChartAnalysis = {
   entryPlan: string;
   riskManagement: string;
   redFlags: string;
-  checklist: string[];
+  checklist: ChecklistItem[];
+  screenshotGuides: ScreenshotGuide[];
 };
 
 export async function POST(request: Request) {
@@ -47,31 +59,45 @@ export async function POST(request: Request) {
 You are an experienced ICT / Smart Money trader and teacher.
 
 You are analyzing chart screenshots for ${pair}.
-The user has uploaded multiple images that (most likely) correspond to these timeframes: ${tfText}.
+The user has uploaded multiple images that most likely correspond to these timeframes: ${tfText}.
 
 User notes (if any):
 ${notes || "No extra notes."}
 
-You MUST answer as a single JSON object with this exact shape (no extra keys):
+You must answer as a single JSON object with this exact shape:
 
 {
   "overview": "high-level summary of the setup and market conditions",
   "htfBias": "clear explanation of higher timeframe bias and structure",
-  "liquidityStory": "detailed narrative of liquidity grabs, inducement, stop hunts, and where money is resting",
-  "entryPlan": "step-by-step plan: which timeframe to execute on, what price behaviour you need to see, where to enter, and example SL/TP in R multiples",
-  "riskManagement": "how to size, what to avoid, how to manage if trade runs or stalls",
+  "liquidityStory": "detailed narrative of liquidity grabs, inducement, stop hunts, and where liquidity is resting",
+  "entryPlan": "step-by-step plan: which timeframe to execute on, what price behaviour to wait for, entry idea, and example SL/TP in R multiples",
+  "riskManagement": "how to size, what to avoid, and how to manage if the trade runs or stalls",
   "redFlags": "when NOT to trade this setup: conditions, session issues, news, messy structure, etc.",
   "checklist": [
-    "short bullet rules that must be true BEFORE taking an entry",
-    "each bullet is one clear condition to verify on the chart",
-    "focus on things the trader can visually check (structure, liquidity, timing, FVG, etc.)"
+    {
+      "text": "one clear condition that should be checked before entry",
+      "satisfied": true or false
+    }
+  ],
+  "screenshotGuides": [
+    {
+      "title": "very short label for the screenshot overlay idea",
+      "description": "instructions like: draw a rectangle around this, mark this stop hunt, arrow from liquidity to FVG, label entry and stop, etc.",
+      "timeframeHint": "optional higher timeframe label such as H4, H1, M15, or overall"
+    }
   ]
 }
 
-Rules for the checklist:
-- 6 to 12 items total.
-- Very concrete (e.g. "Asia high/low taken" not "liquidity handled").
-- Think of it as a pre-flight checklist before order execution.
+Checklist rules:
+- 6 to 12 items.
+- Each item is a concrete visual condition: session, liquidity taken, structure, FVG, displacement, candle behaviour.
+- Set "satisfied": true if you can clearly see that condition already fulfilled on the charts.
+- Set "satisfied": false if the trader still needs to wait for, or confirm, that condition.
+
+Screenshot guides:
+- Give 3 to 6 guides.
+- Think of them as drawing instructions that help a student see the idea on the screenshot.
+- You do NOT need real coordinates, just explain in words what should be highlighted.
 
 Do NOT include any explanation outside the JSON.
 `;
