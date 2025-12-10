@@ -5,7 +5,7 @@ import { supabase } from "../lib/supabaseClient";
 
 type ModelProfile = {
   id: string;
-  name: "swing" | "intraday" | "scalping" | string;
+  name: string;
   category: "swing" | "intraday" | "scalping";
   timeframes: string;
   duration: string;
@@ -76,6 +76,7 @@ export default function Home() {
       .single();
 
     if (error) {
+      alert("Supabase insert error:\n" + JSON.stringify(error, null, 2));
       console.error("Error saving model:", error);
     } else if (data) {
       const saved: ModelProfile = {
@@ -91,6 +92,21 @@ export default function Home() {
     }
 
     setSavingModel(false);
+  };
+
+  const deleteModel = async (id: string) => {
+    const confirmed = confirm("Delete this model?");
+    if (!confirmed) return;
+
+    const { error } = await supabase.from("models").delete().eq("id", id);
+
+    if (error) {
+      alert("Supabase delete error:\n" + JSON.stringify(error, null, 2));
+      console.error("Error deleting model:", error);
+      return;
+    }
+
+    setModels((prev) => prev.filter((m) => m.id !== id));
   };
 
   return (
@@ -202,12 +218,22 @@ export default function Home() {
                     className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 sm:p-4 space-y-2"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="font-medium text-sm sm:text-base">
-                        {m.name}
-                      </h3>
-                      <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
-                        {m.category}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-medium text-sm sm:text-base">
+                          {m.name}
+                        </h3>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full bg-slate-800 text-slate-300">
+                          {m.category}
+                        </span>
+                        <button
+                          onClick={() => deleteModel(m.id)}
+                          className="text-[10px] px-2 py-1 rounded-full border border-red-500/60 text-red-300 hover:bg-red-500/10 transition"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                     <div className="flex flex-wrap gap-2 text-xs text-slate-400">
                       <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-800">
