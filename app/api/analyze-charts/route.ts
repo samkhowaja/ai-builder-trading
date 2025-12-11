@@ -1,10 +1,23 @@
-// app/api/chart-analyses/route.ts
+// app/api/analyze-charts/route.ts
 import { NextResponse } from "next/server";
-import { dbQuery, hasDb } from "@/lib/db";
+// If you already have an OpenAI client set up, import that instead
+// import { openai } from "@/lib/openai";
 
-// keep these in sync with client types, but they don't have to be 100% perfect
-type ChartImage = { id: string; name: string; dataUrl: string };
-type ChecklistState = { text: string; done: boolean };
+type UploadImage = { name: string; dataUrl: string };
+
+type ChecklistItem = { text: string; satisfied: boolean };
+
+type ScreenshotGuide = {
+  title: string;
+  description: string;
+  timeframeHint?: string;
+};
+
+type LearningResourceQuery = {
+  concept: string;
+  query: string;
+  platforms: string[];
+};
 
 type ChartAnalysis = {
   overview: string;
@@ -17,163 +30,94 @@ type ChartAnalysis = {
   qualityScore: number;
   qualityLabel: string;
   qualityReason: string;
-  checklist: { text: string; satisfied: boolean }[];
-  screenshotGuides: any[];
-  learningQueries: any[];
+  checklist: ChecklistItem[];
+  screenshotGuides: ScreenshotGuide[];
+  learningQueries: LearningResourceQuery[];
   tradeOutcome?: "hit" | "miss" | "pending";
 };
 
-type ChartAnalysisEntry = {
-  id: string;
-  pair: string;
-  timeframes: string[];
-  notes: string;
-  analysis: ChartAnalysis;
-  candleEnds: Record<string, number>;
-  checklistState: ChecklistState[];
-  chartImages: ChartImage[];
-  createdAt: string;
-};
-
-// ────────────────────────
-// GET – latest or history
-// ────────────────────────
-
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const pair = searchParams.get("pair");
-  const wantHistory = searchParams.get("history") === "1";
-
-  if (!pair) {
-    return NextResponse.json(
-      { error: "Missing 'pair' query parameter" },
-      { status: 400 },
-    );
-  }
-
-  // No DB configured → just pretend there's no history
-  if (!hasDb()) {
-    if (wantHistory) {
-      return NextResponse.json({
-        entries: [] as ChartAnalysisEntry[],
-        source: "fallback",
-      });
-    }
-    return NextResponse.json({ entry: null, source: "fallback" });
-  }
-
-  await dbQuery`
-    CREATE TABLE IF NOT EXISTS chart_analyses (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      pair TEXT NOT NULL,
-      timeframes TEXT[] NOT NULL,
-      notes TEXT,
-      analysis JSONB NOT NULL,
-      candle_ends JSONB,
-      checklist_state JSONB,
-      chart_images JSONB,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `;
-
-  if (wantHistory) {
-    const { rows } = await dbQuery<ChartAnalysisEntry>`
-      SELECT id,
-             pair,
-             timeframes,
-             notes,
-             analysis,
-             candle_ends AS "candleEnds",
-             checklist_state AS "checklistState",
-             chart_images AS "chartImages",
-             created_at AS "createdAt"
-      FROM chart_analyses
-      WHERE pair = ${pair}
-      ORDER BY created_at DESC
-      LIMIT 50;
-    `;
-    return NextResponse.json({ entries: rows, source: "db" });
-  }
-
-  const { rows } = await dbQuery<ChartAnalysisEntry>`
-    SELECT id,
-           pair,
-           timeframes,
-           notes,
-           analysis,
-           candle_ends AS "candleEnds",
-           checklist_state AS "checklistState",
-           chart_images AS "chartImages",
-           created_at AS "createdAt"
-    FROM chart_analyses
-    WHERE pair = ${pair}
-    ORDER BY created_at DESC
-    LIMIT 1;
-  `;
-
-  return NextResponse.json(
-    { entry: rows[0] ?? null, source: "db" },
-    { status: 200 },
-  );
-}
-
-// ────────────────────────
-// POST – save snapshot
-// ────────────────────────
-
 export async function POST(req: Request) {
   const body = await req.json();
-
   const pair: string | undefined = body.pair;
   const timeframes: string[] = body.timeframes || [];
   const notes: string = body.notes || "";
-  const analysis: ChartAnalysis | undefined = body.analysis;
-  const candleEnds: Record<string, number> = body.candleEnds || {};
-  const checklistState: ChecklistState[] = body.checklistState || [];
-  const chartImages: ChartImage[] = body.chartImages || [];
+  const images: UploadImage[] = body.images || [];
 
-  // 👉 Be forgiving:
-  // - If no DB
-  // - OR no pair / analysis
-  // We just no-op and return ok so the UI never shows an error.
-  if (!hasDb() || !pair || !analysis) {
-    return NextResponse.json({ ok: true, source: "noop" });
+  if (!pair || !images.length) {
+    return NextResponse.json(
+      { error: "Missing 'pair' or 'images' in request body" },
+      { status: 400 }
+    );
   }
 
-  await dbQuery`
-    CREATE TABLE IF NOT EXISTS chart_analyses (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      pair TEXT NOT NULL,
-      timeframes TEXT[] NOT NULL,
-      notes TEXT,
-      analysis JSONB NOT NULL,
-      candle_ends JSONB,
-      checklist_state JSONB,
-      chart_images JSONB,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `;
+  try {
+    // ─────────────────────────────
+    // 1) Build a prompt for your AI
+    // ─────────────────────────────
+    // If you already have working OpenAI code,
+    // plug it in here and set `analysis` from the model response.
 
-  await dbQuery`
-    INSERT INTO chart_analyses (
-      pair,
-      timeframes,
-      notes,
-      analysis,
-      candle_ends,
-      checklist_state,
-      chart_images
-    )
-    VALUES (
-      ${pair},
-      ${timeframes},
-      ${notes},
-      ${analysis},
-      ${candleEnds},
-      ${checklistState},
-      ${chartImages}
-    );
-  `;
+    // TODO: replace this whole dummy block with your real OpenAI call.
+    // For now we return a simple static analysis so the UI works.
 
-  return NextResponse.json({ ok: true, source: "db" });
+    const analysis: ChartAnalysis = {
+      overview: `Study note for ${pair} using ${timeframes.join(
+        ", "
+      ) || "your selected"} timeframes. This is a dummy analysis placeholder.`,
+      htfBias:
+        "Higher timeframe looks bullish in this placeholder. Replace with real AI output.",
+      liquidityStory:
+        "Describe where liquidity is resting above highs / below lows, and where it was grabbed.",
+      entryPlan:
+        "Example: Wait for price to revisit the fair value gap after liquidity sweep, then enter with stop beyond the extreme.",
+      riskManagement:
+        "Risk 1% per idea. Place stops beyond structure, avoid overlapping news events.",
+      redFlags:
+        "Skip the trade if structure breaks in the opposite direction or if multiple HTFs conflict.",
+      nextMove:
+        "If price holds above reclaimed liquidity and FVG, next target is previous high or opposing liquidity pool.",
+      qualityScore: 80,
+      qualityLabel: "A",
+      qualityReason:
+        "Clean HTF bias, clear liquidity story and entry, but this is demo-only.",
+      checklist: [
+        { text: "HTF bias clear and aligned?", satisfied: false },
+        { text: "Liquidity grab confirmed?", satisfied: false },
+        { text: "Clean entry zone with SL/TP planned?", satisfied: false },
+      ],
+      screenshotGuides: [
+        {
+          title: "HTF context",
+          description:
+            "Capture the H4 / H1 chart showing major swing structure and liquidity pools.",
+          timeframeHint: "H4 / H1",
+        },
+        {
+          title: "Entry timeframe",
+          description:
+            "Capture the M15 / M5 chart where you see the liquidity sweep and FVG.",
+          timeframeHint: "M15 / M5",
+        },
+      ],
+      learningQueries: [
+        {
+          concept: "ICT liquidity grab + FVG entry",
+          query: "ICT liquidity grab FVG entry example",
+          platforms: ["YouTube", "TikTok", "Images"],
+        },
+      ],
+      tradeOutcome: "pending",
+    };
+
+    // ─────────────────────────────
+    // 2) Return analysis for the UI
+    // ─────────────────────────────
+    return NextResponse.json({ analysis });
+  } catch (err) {
+    console.error("analyze-charts error:", err);
+    return NextResponse.json(
+      { error: "Failed to generate analysis." },
+      { status: 500 }
+    );
+  }
 }
