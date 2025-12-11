@@ -1,1298 +1,693 @@
 "use client";
 
 export const dynamic = "force-dynamic";
+
 import React, {
   useEffect,
   useState,
   useCallback,
+  ChangeEvent,
+  ClipboardEvent,
 } from "react";
 import Image from "next/image";
 
-// ───────────────────────────────
-// Types
-// ───────────────────────────────
+// --------------------------------------------------
+// Defaults
+// --------------------------------------------------
 
-type UploadImage = { name: string; dataUrl: string };
+const DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 
-type ChartImage = { id: string; name: string; dataUrl: string };
+type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1";
 
-type ChecklistItem = { text: string; satisfied: boolean };
-type ChecklistState = { text: string; done: boolean };
+type ChecklistItem = {
+  label: string;
+  done: boolean;
+};
 
-type ScreenshotGuide = {
+type AnalysisSection = {
   title: string;
-  description: string;
-  timeframeHint?: string;
+  body: string;
+  checklist?: ChecklistItem[];
 };
 
-type LearningResourceQuery = {
-  concept: string;
-  query: string;
-  platforms: string[];
-};
-
-type ChartAnalysis = {
-  overview: string;
-  htfBias: string;
-  liquidityStory: string;
-  entryPlan: string;
-  riskManagement: string;
-  redFlags: string;
-  nextMove: string;
-  qualityScore: number;
-  qualityLabel: string; // "A+", "A", "B" etc.
-  qualityReason: string;
-  checklist: ChecklistItem[];
-  screenshotGuides: ScreenshotGuide[];
-  learningQueries: LearningResourceQuery[];
-  tradeOutcome?: "hit" | "miss" | "pending";
-};
-
-type AnalyzeResponse = {
-  analysis?: ChartAnalysis;
-  error?: string;
-};
-
-type ChartAnalysisEntry = {
+type PairAnalysisSnapshot = {
   id: string;
   pair: string;
-  timeframes: string[];
-  notes: string;
-  analysis: ChartAnalysis;
-  candleEnds: Record<string, number>;
-  checklistState: ChecklistState[];
-  chartImages: ChartImage[];
   createdAt: string;
+  quality: "A+" | "A" | "B" | "C";
+  sections: AnalysisSection[];
 };
 
-type ViewTab =
-  | "dashboard"
-  | "upload"
-  | "analysis"
-  | "predictions"
-  | "history";
-
-type ProgressStep = 0 | 1 | 2 | 3;
-
-// Local cache per pair (keeps things alive when you navigate away)
-type PairState = {
-  analysis: ChartAnalysis | null;
-  checklist: ChecklistState[];
-  chartImages: ChartImage[];
-  timeframes: string[];
-  notes: string;
-  candleEnds: Record<string, number>;
-  history: ChartAnalysisEntry[];
+type AttachedScreenshot = {
+  id: string;
+  file: File;
+  previewUrl: string;
+  timeframeHint?: Timeframe;
 };
 
-// ───────────────────────────────
-// Constants / helpers
-// ───────────────────────────────
+// --------------------------------------------------
+// Helper
+// --------------------------------------------------
 
-const TF_MINUTES: Record<string, number> = {
-  M1: 1,
-  M5: 5,
-  M15: 15,
-  M30: 30,
-  H1: 60,
-  H4: 240,
-  D1: 1440,
-};
+const timeframes: Timeframe[] = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 
-const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
-
-function makeId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return Math.random().toString(36).slice(2);
+function formatDate(dt: string | Date) {
+  const d = typeof dt === "string" ? new Date(dt) : dt;
+  return d.toLocaleString();
 }
 
-function computeCandleEnds(
-  nowTs: number,
-  timeframes: string[],
-): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const tf of timeframes) {
-    const mins = TF_MINUTES[tf];
-    if (!mins) continue;
-    const tfMs = mins * 60_000;
-    out[tf] = Math.ceil(nowTs / tfMs) * tfMs;
-  }
-  return out;
-}
+// --------------------------------------------------
+// Main Page Component
+// --------------------------------------------------
 
-function formatRemaining(ms: number): string {
-  if (ms <= 0) return "closed";
-  const sec = Math.floor(ms / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-}
+export default function HomePage() {
+  // workspace / navigation
+  const [pairs, setPairs] = useState<string[]>(DEFAULT_PAIRS);
+  const [selectedPair, setSelectedPair] = useState<string>(DEFAULT_PAIRS[0]);
+  const [view, setView] = useState<"dashboard" | "pair">("dashboard");
 
-function buildSearchUrl(platform: string, query: string): string {
-  const q = encodeURIComponent(query);
-  switch (platform) {
-    case "YouTube":
-      return `https://www.youtube.com/results?search_query=${q}`;
-    case "TikTok":
-      return `https://www.tiktok.com/search?q=${q}`;
-    case "Instagram":
-      return `https://www.instagram.com/explore/search/keyword/?q=${q}`;
-    case "Images":
-      return `https://www.google.com/search?tbm=isch&q=${q}`;
-    default:
-      return `https://www.google.com/search?q=${q}`;
-  }
-}
-
-// ───────────────────────────────
-// Clipboard paste panel
-// ───────────────────────────────
-
-function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
-  const [previews, setPreviews] = useState<string[]>([]);
-
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent<HTMLDivElement>) => {
-      const items = e.clipboardData.items;
-      const newFiles: File[] = [];
-
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.type.startsWith("image/")) {
-          const file = item.getAsFile();
-          if (file) {
-            const url = URL.createObjectURL(file);
-            setPreviews((prev) => [...prev, url]);
-            newFiles.push(file);
-          }
-        }
-      }
-
-      if (newFiles.length && props.onImages) {
-        props.onImages(newFiles);
-      }
-    },
-    [props],
+  // timeframe + screenshots
+  const [selectedTFs, setSelectedTFs] = useState<Timeframe[]>(["M15", "H1", "H4"]);
+  const [screenshots, setScreenshots] = useState<AttachedScreenshot[]>([]);
+  const [prompt, setPrompt] = useState(
+    "- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high-probability entry with SL/TP idea?"
   );
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  return (
-    <div
-      onPaste={handlePaste}
-      tabIndex={0}
-      className="flex min-h-[120px] flex-col rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300 outline-none focus:ring-2 focus:ring-emerald-500/60"
-    >
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <p>
-          📸{" "}
-          <span className="font-semibold text-zinc-100">
-            Paste screenshots
-          </span>{" "}
-          (Ctrl+V / Cmd+V) while this box is focused.
-        </p>
-        <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
-          Click here then paste
-        </span>
-      </div>
+  // analysis snapshots per pair
+  const [snapshots, setSnapshots] = useState<PairAnalysisSnapshot[]>([]);
+  const [currentAnalysis, setCurrentAnalysis] = useState<PairAnalysisSnapshot | null>(null);
 
-      {previews.length === 0 ? (
-        <p className="text-[11px] text-zinc-500">
-          In TradingView copy a screenshot to clipboard, click this box,
-          then press Ctrl+V or Cmd+V. The images stay attached until you
-          remove them.
-        </p>
-      ) : (
-        <div className="mt-1 grid max-h-28 grid-cols-3 gap-1 overflow-auto">
-          {previews.map((src, i) => (
-            <div
-              key={i}
-              className="overflow-hidden rounded-md border border-zinc-800 bg-black"
-            >
-              <Image
-                src={src}
-                alt="pasted preview"
-                width={200}
-                height={120}
-                unoptimized
-                className="h-full w-full object-cover"
-              />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+  // --------------------------------------------------
+  // Load pairs from API (but keep defaults if it fails)
+  // --------------------------------------------------
 
-// ───────────────────────────────
-// Main page
-// ───────────────────────────────
-
-export default function Page() {
-  // Sidebar / global
-  const [pairs, setPairs] = useState<string[]>([]);
-  const [selectedPair, setSelectedPair] = useState<string | null>(null);
-  const [view, setView] = useState<ViewTab>("dashboard");
-
-  // Per-pair live state
-  const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>([
-    "H4",
-    "H1",
-    "M15",
-  ]);
-  const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
-
-  const [chartImages, setChartImages] = useState<ChartImage[]>([]);
-  const [notes, setNotes] = useState<string>("");
-  const [analysis, setAnalysis] = useState<ChartAnalysis | null>(null);
-  const [checklist, setChecklist] = useState<ChecklistState[]>([]);
-  const [candleEnds, setCandleEnds] = useState<Record<string, number>>({});
-  const [historyEntries, setHistoryEntries] = useState<ChartAnalysisEntry[]>(
-    [],
-  );
-
-  // Local cache per pair so nothing is lost when switching pairs
-  const [pairStates, setPairStates] = useState<Record<string, PairState>>({});
-
-  // Meta
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [nowTs, setNowTs] = useState<number>(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Load pairs from server or fallback
-  useEffect(() => {
-    const loadPairs = async () => {
+    async function loadPairs() {
       try {
-        const res = await fetch("/api/pairs");
-        if (!res.ok) throw new Error();
-        const data: { pairs: string[] } = await res.json();
-        setPairs(data.pairs.length ? data.pairs : defaultPairs);
-      } catch {
-        setPairs(defaultPairs);
+        const res = await fetch("/api/pairs", { cache: "no-store" });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const data = await res.json();
+
+        // support:
+        //   ["EURUSD", "GBPUSD", ...] OR
+        //   [{ symbol: "EURUSD", ...}, ...]
+        const symbols: string[] = Array.isArray(data)
+          ? data
+              .map((item: any) =>
+                typeof item === "string" ? item : item?.symbol
+              )
+              .filter((s: any) => typeof s === "string")
+          : [];
+
+        if (symbols.length > 0) {
+          setPairs(symbols);
+          setSelectedPair((prev) =>
+            prev && symbols.includes(prev) ? prev : symbols[0]
+          );
+        } else {
+          console.warn("[pairs] /api/pairs returned empty list, keeping defaults");
+        }
+      } catch (err) {
+        console.warn("[pairs] Failed to load from /api/pairs, using defaults", err);
+        // keep DEFAULT_PAIRS
       }
-    };
+    }
+
     loadPairs();
   }, []);
 
-  const savePairs = async (next: string[]) => {
-    setPairs(next);
-    try {
-      await fetch("/api/pairs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairs: next }),
-      });
-    } catch {
-      // ignore in fallback mode
+  // ensure selectedPair is always valid
+  useEffect(() => {
+    if (!pairs.length) return;
+    if (!selectedPair || !pairs.includes(selectedPair)) {
+      setSelectedPair(pairs[0]);
     }
-  };
+  }, [pairs, selectedPair]);
 
-  // Cache current pair's state whenever it changes
-  useEffect(() => {
-    if (!selectedPair) return;
-    setPairStates((prev) => ({
-      ...prev,
-      [selectedPair]: {
-        analysis,
-        checklist,
-        chartImages,
-        timeframes: selectedTimeframes,
-        notes,
-        candleEnds,
-        history: historyEntries,
-      },
-    }));
-  }, [
-    selectedPair,
-    analysis,
-    checklist,
-    chartImages,
-    selectedTimeframes,
-    notes,
-    candleEnds,
-    historyEntries,
-  ]);
+  // --------------------------------------------------
+  // Screenshot handlers
+  // --------------------------------------------------
 
-  // Load state when pair changes (first from cache, then optionally from DB)
-  useEffect(() => {
-    const loadForPair = async () => {
-      if (!selectedPair) {
-        setAnalysis(null);
-        setChecklist([]);
-        setChartImages([]);
-        setHistoryEntries([]);
-        setCandleEnds({});
-        setNotes("");
-        setView("dashboard");
-        return;
-      }
-
-      // 1) Hydrate from local cache if present
-      const cached = pairStates[selectedPair];
-      if (cached) {
-        setAnalysis(cached.analysis);
-        setChecklist(cached.checklist);
-        setChartImages(cached.chartImages);
-        setSelectedTimeframes(
-          cached.timeframes.length ? cached.timeframes : ["H4", "H1", "M15"],
-        );
-        setNotes(cached.notes);
-        setCandleEnds(cached.candleEnds);
-        setHistoryEntries(cached.history);
-        setView(cached.analysis ? "analysis" : "upload");
-      } else {
-        // New pair → clean upload state
-        setAnalysis(null);
-        setChecklist([]);
-        setChartImages([]);
-        setHistoryEntries([]);
-        setCandleEnds({});
-        setNotes("");
-        setSelectedTimeframes(["H4", "H1", "M15"]);
-        setView("upload");
-      }
-
-      // 2) Try to hydrate from DB if available
-      try {
-        const res = await fetch(
-          `/api/chart-analyses?pair=${encodeURIComponent(
-            selectedPair,
-          )}&history=1`,
-        );
-        if (!res.ok) throw new Error();
-        const data = await res.json();
-        const source = data.source as string | undefined;
-        if (source === "fallback") return; // no DB, only local cache
-
-        let latest: ChartAnalysisEntry | null = null;
-
-        if ("entries" in data && Array.isArray(data.entries)) {
-          latest = data.entries[0] ?? null;
-          setHistoryEntries(data.entries);
-        } else if ("entry" in data) {
-          latest = data.entry;
-          setHistoryEntries(latest ? [latest] : []);
-        }
-
-        if (!latest) return;
-
-        setAnalysis(latest.analysis);
-        setCandleEnds(latest.candleEnds || {});
-        setChartImages(latest.chartImages || []);
-        setNotes(latest.notes || "");
-        setSelectedTimeframes(
-          latest.timeframes.length ? latest.timeframes : ["H4", "H1", "M15"],
-        );
-        setChecklist(
-          (latest.checklistState || []).map((c: any) => ({
-            text: c.text,
-            done: !!c.done,
-          })),
-        );
-        setView("analysis");
-      } catch {
-        // ignore errors; local cache still works
-      }
-    };
-
-    loadForPair();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPair]);
-
-  // Derived: quality label per pair from cache
-  const pairQuality: Record<string, string> = {};
-  for (const [symbol, state] of Object.entries(pairStates)) {
-    const label =
-      state.history[0]?.analysis?.qualityLabel ||
-      state.analysis?.qualityLabel;
-    if (label) pairQuality[symbol] = label;
-  }
-
-  // Timeframe toggle
-  const toggleTf = (tf: string) => {
-    setSelectedTimeframes((prev) =>
-      prev.includes(tf) ? prev.filter((x) => x !== tf) : [...prev, tf],
+  const handleTimeframeToggle = (tf: Timeframe) => {
+    setSelectedTFs((prev) =>
+      prev.includes(tf) ? prev.filter((t) => t !== tf) : [...prev, tf]
     );
   };
 
-  // File / paste handling
-  const addFileAsImage = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      setChartImages((prev) => [
-        ...prev,
-        { id: makeId(), name: file.name || "chart.png", dataUrl },
-      ]);
-    };
-    reader.readAsDataURL(file);
+  const handleFilesChosen = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const newShots: AttachedScreenshot[] = files.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+
+    setScreenshots((prev) => [...prev, ...newShots]);
+    setView("pair");
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
-    Array.from(e.target.files).forEach(addFileAsImage);
+  const handlePaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    const items = e.clipboardData.items;
+    const files: File[] = [];
+    for (const item of items as any) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (!files.length) return;
+
+    const newShots: AttachedScreenshot[] = files.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+
+    setScreenshots((prev) => [...prev, ...newShots]);
+    setView("pair");
   };
 
-  const handlePasteImages = (files: File[]) => {
-    files.forEach(addFileAsImage);
+  const handleRemoveScreenshot = (id: string) => {
+    setScreenshots((prev) => prev.filter((s) => s.id !== id));
   };
 
-  const clearImages = () => {
-    setChartImages([]);
-    setError(null);
+  const handleRemoveAllScreenshots = () => {
+    setScreenshots([]);
   };
 
-  // Analyze button
-  const saveSnapshot = async (
-    analysisToSave: ChartAnalysis,
-    checklistToSave: ChecklistState[],
-    candleEndsToSave: Record<string, number>,
-  ) => {
+  // --------------------------------------------------
+  // Analyze charts – calls your existing /api/analyze-charts
+  // --------------------------------------------------
+
+  const handleAnalyze = useCallback(async () => {
     if (!selectedPair) return;
+    if (!screenshots.length) return;
+
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+
     try {
-      await fetch("/api/chart-analyses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pair: selectedPair,
-          timeframes: selectedTimeframes,
-          notes,
-          analysis: analysisToSave,
-          candleEnds: candleEndsToSave,
-          checklistState: checklistToSave,
-          chartImages,
-        }),
+      const formData = new FormData();
+      formData.append("pair", selectedPair);
+      formData.append("prompt", prompt);
+      formData.append("timeframes", JSON.stringify(selectedTFs));
+
+      screenshots.forEach((shot, idx) => {
+        formData.append(`image_${idx}`, shot.file, shot.file.name);
       });
-    } catch {
-      // ignore in fallback mode
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!selectedPair) {
-      setError("Pick a pair first from the left.");
-      return;
-    }
-    if (!chartImages.length) {
-      setError("Upload or paste at least one chart screenshot.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const images: UploadImage[] = chartImages.map((img) => ({
-        name: img.name,
-        dataUrl: img.dataUrl,
-      }));
 
       const res = await fetch("/api/analyze-charts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pair: selectedPair,
-          timeframes: selectedTimeframes,
-          notes,
-          images,
-        }),
+        body: formData,
       });
 
-      const data: AnalyzeResponse = await res.json();
-
-      if (!res.ok || data.error) {
-        setError(data.error || "Failed to analyze charts.");
-        return;
-      }
-      if (!data.analysis) {
-        setError("Analysis came back empty.");
-        return;
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
       }
 
-      const now = Date.now();
-      const ends = computeCandleEnds(now, selectedTimeframes);
-      const checklistState: ChecklistState[] =
-        data.analysis.checklist?.map((c) => ({
-          text: c.text,
-          done: !!c.satisfied,
-        })) || [];
+      const data = await res.json();
+      // Expecting something like:
+      // { id, quality, sections: [{title, body, checklist: [...] }], createdAt }
+      const snapshot: PairAnalysisSnapshot = {
+        id: data.id ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        pair: selectedPair,
+        createdAt: data.createdAt ?? new Date().toISOString(),
+        quality: data.quality ?? "A",
+        sections: data.sections ?? [],
+      };
 
-      setAnalysis(data.analysis);
-      setChecklist(checklistState);
-      setCandleEnds(ends);
-      setView("analysis");
-
-      await saveSnapshot(data.analysis, checklistState, ends);
-    } catch (err) {
-      console.error(err);
-      setError("Something went wrong during analysis.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const toggleChecklistItem = (index: number) => {
-    setChecklist((prev) => {
-      const next = prev.map((c, i) =>
-        i === index ? { ...c, done: !c.done } : c,
+      setSnapshots((prev) => [snapshot, ...prev]);
+      setCurrentAnalysis(snapshot);
+      setView("pair");
+    } catch (err: any) {
+      console.error("analyze error", err);
+      setAnalysisError(
+        err?.message ?? "Failed to analyze charts. Please try again."
       );
-      if (analysis) {
-        saveSnapshot(analysis, next, candleEnds);
-      }
-      return next;
-    });
-  };
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [selectedPair, screenshots, prompt, selectedTFs]);
 
-  // Progress step
-  const progressStep: ProgressStep = (() => {
-    if (!selectedPair) return 0;
-    if (!chartImages.length) return 1;
-    if (!analysis) return 2;
-    return 3;
-  })();
+  // --------------------------------------------------
+  // Rendering helpers
+  // --------------------------------------------------
 
-  const completedChecklist = checklist.filter((c) => c.done).length;
-  const totalChecklist = checklist.length;
+  const dashboardWeeklyCount = snapshots.filter(
+    (s) => s.pair === selectedPair
+  ).length;
 
-  const fmtDate = (iso: string) =>
-    new Date(iso).toLocaleString(undefined, {
-      year: "2-digit",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+  const latestSnapshotForSelected = snapshots.find(
+    (s) => s.pair === selectedPair
+  );
 
-  // Sidebar row
-  const renderPairRow = (pair: string) => {
-    const active = pair === selectedPair;
-    const label = pairQuality[pair];
+  const checklistProgress = currentAnalysis?.sections.flatMap(
+    (sec) => sec.checklist || []
+  );
+  const checklistDone =
+    checklistProgress?.filter((item) => item.done).length ?? 0;
+  const checklistTotal = checklistProgress?.length ?? 0;
+  const checklistPercent =
+    checklistTotal > 0 ? Math.round((checklistDone / checklistTotal) * 100) : 0;
 
-    return (
-      <button
-        key={pair}
-        type="button"
-        onClick={() => {
-          setSelectedPair(pair);
-          setView("upload");
-          setError(null);
-        }}
-        className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition ${
-          active
-            ? "bg-emerald-500/10 text-emerald-200"
-            : "bg-transparent text-zinc-200 hover:bg-zinc-900"
-        }`}
-      >
-        <span className="font-medium">{pair}</span>
-        <span className="text-[11px] text-zinc-400">
-          {label ? label : "–"}
-        </span>
-      </button>
-    );
-  };
-
-  const renderTextBlocks = (value?: string) =>
-    (value || "")
-      .split(/\n\s*\n/)
-      .filter((p) => p.trim().length)
-      .map((p, i) => (
-        <p key={i} className="mb-2 text-sm text-zinc-100">
-          {p.trim()}
-        </p>
-      ));
-
-  // ───────────────────────────────
-  // JSX
-  // ───────────────────────────────
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
-      {/* Top bar */}
-      <header className="border-b border-zinc-800 bg-black/70 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-xs font-black text-black">
-              AI
-            </div>
-            <div className="leading-tight">
-              <p className="text-sm font-semibold tracking-tight">
-                Trading Companion
-              </p>
-              <p className="text-[11px] text-zinc-500">
-                Multi timeframe chart analyzer and playbook builder
-              </p>
-            </div>
+    <div className="min-h-screen bg-[#02040a] text-slate-100">
+      {/* Top nav */}
+      <header className="border-b border-slate-800 px-6 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+            <span className="text-emerald-400 font-semibold text-sm">AI</span>
           </div>
-
-          <nav className="flex items-center gap-3 text-xs">
-            <span className="rounded-full bg-emerald-500/10 px-3 py-1 font-medium text-emerald-300">
-              Analyzer
+          <div className="flex flex-col leading-tight">
+            <span className="font-semibold text-sm">
+              Trading Companion
             </span>
-            <a
-              href="/builder"
-              className="rounded-full px-3 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-            >
-              Models / learning
-            </a>
-            <a
-              href="/video-models"
-              className="rounded-full px-3 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-            >
-              YouTube models
-            </a>
-          </nav>
+            <span className="text-xs text-slate-400">
+              Multi timeframe chart analyzer and playbook builder
+            </span>
+          </div>
         </div>
+        <nav className="flex items-center gap-2 text-xs">
+          <button className="px-3 py-1 rounded-full bg-emerald-500 text-black font-medium">
+            Analyzer
+          </button>
+          <button className="px-3 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700">
+            Models / learning
+          </button>
+          <button className="px-3 py-1 rounded-full bg-slate-800 text-slate-300 hover:bg-slate-700">
+            YouTube models
+          </button>
+        </nav>
       </header>
 
-      <div className="mx-auto flex max-w-6xl gap-4 px-4 py-6">
-        {/* Sidebar */}
-        <aside className="w-64 flex-shrink-0 rounded-3xl border border-zinc-800 bg-gradient-to-b from-zinc-950 to-black px-3 py-4">
-          {/* Dashboard row */}
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedPair(null);
-              setView("dashboard");
-              setError(null);
-            }}
-            className={`mb-4 flex w-full items-center justify-between rounded-xl px-3 py-3 text-left text-sm ${
-              view === "dashboard" && !selectedPair
-                ? "bg-emerald-500/10 text-emerald-200"
-                : "bg-zinc-950 text-zinc-100 hover:bg-zinc-900"
-            }`}
-          >
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-300">
-                  📊
-                </div>
-                <span className="font-semibold">Dashboard</span>
+      {/* Main layout */}
+      <main className="flex gap-4 px-6 py-4">
+        {/* Sidebar: Dashboard + pairs */}
+        <aside className="w-64 flex-shrink-0">
+          <div className="rounded-3xl bg-[#020814] border border-emerald-800/40 shadow-lg shadow-emerald-900/20 p-3 mb-4">
+            <button
+              onClick={() => setView("dashboard")}
+              className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 transition ${
+                view === "dashboard"
+                  ? "bg-emerald-500/15 border border-emerald-500/60"
+                  : "bg-transparent border border-transparent hover:bg-slate-900/60"
+              }`}
+            >
+              <div className="h-7 w-7 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                <span className="text-emerald-400 text-lg">▢</span>
               </div>
-              <p className="mt-1 text-[11px] text-zinc-500">
-                Weekly stats and A+ radar
-              </p>
-            </div>
-          </button>
+              <div className="flex flex-col text-left">
+                <span className="text-sm font-semibold">Dashboard</span>
+                <span className="text-xs text-slate-400">
+                  Weekly stats and A+ radar
+                </span>
+              </div>
+            </button>
 
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-            Pairs
-          </div>
-          <div className="space-y-1">
-            {pairs.map(renderPairRow)}
+            <div className="mt-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+                Pairs
+              </div>
+              <div className="space-y-1 max-h-[420px] overflow-y-auto pr-1">
+                {pairs.map((pair) => (
+                  <button
+                    key={pair}
+                    onClick={() => {
+                      setSelectedPair(pair);
+                      setView("pair");
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition ${
+                      selectedPair === pair && view === "pair"
+                        ? "bg-emerald-500/20 text-emerald-100 border border-emerald-500/50"
+                        : "bg-slate-900/60 text-slate-200 border border-transparent hover:bg-slate-800"
+                    }`}
+                  >
+                    <span className="font-medium">{pair}</span>
+                    <span className="text-[10px] text-slate-400">
+                      Watchlist
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </aside>
 
         {/* Main content */}
-        <main className="flex-1 space-y-4">
-          {/* Workflow bar */}
-          {selectedPair && (
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-zinc-500">
-                    Workflow
-                  </p>
-                  <p className="text-sm font-semibold text-zinc-100">
-                    {selectedPair}
-                  </p>
-                </div>
-                <p className="text-[11px] text-zinc-500">
-                  Step {progressStep || 1} of 3
-                </p>
+        <section className="flex-1 space-y-4">
+          {/* Dashboard cards at top – always visible */}
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {/* Weekly performance */}
+            <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-4 py-3">
+              <div className="text-xs font-semibold text-slate-300 mb-2">
+                Weekly performance
               </div>
-              <div className="flex items-center gap-3 text-[11px]">
-                {[
-                  { id: 1, label: "Upload screenshots" },
-                  { id: 2, label: "Run analysis" },
-                  { id: 3, label: "Plan & predictions" },
-                ].map((step, index) => {
-                  const active = progressStep === (index + 1);
-                  const done = (progressStep || 0) > index + 1;
-
-                  return (
-                    <div key={step.id} className="flex flex-1 items-center">
-                      <div
-                        className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] ${
-                          done
-                            ? "bg-emerald-500 text-black"
-                            : active
-                            ? "bg-emerald-500/20 text-emerald-300"
-                            : "bg-zinc-900 text-zinc-500"
-                        }`}
-                      >
-                        {done ? "✓" : step.id}
-                      </div>
-                      <div className="ml-2 text-zinc-400">
-                        {step.label}
-                      </div>
-                      {index < 2 && (
-                        <div className="ml-2 h-px flex-1 bg-zinc-800" />
-                      )}
-                    </div>
-                  );
-                })}
+              <div className="text-3xl font-semibold text-emerald-400 leading-none">
+                {dashboardWeeklyCount}
+              </div>
+              <div className="mt-1 text-xs text-slate-400">
+                Analyses stored for{" "}
+                <span className="font-medium">{selectedPair}</span>.
               </div>
             </div>
-          )}
 
-          {/* Tabs under workflow */}
-          {selectedPair && (
-            <div className="flex items-center gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setView("upload")}
-                className={`rounded-full px-3 py-1 ${
-                  view === "upload"
-                    ? "bg-emerald-500 text-black"
-                    : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                }`}
-              >
-                Upload
-              </button>
-
-              {analysis && (
+            {/* Latest quality */}
+            <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-4 py-3">
+              <div className="text-xs font-semibold text-slate-300 mb-2">
+                Latest quality
+              </div>
+              {latestSnapshotForSelected ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setView("analysis")}
-                    className={`rounded-full px-3 py-1 ${
-                      view === "analysis"
-                        ? "bg-emerald-500 text-black"
-                        : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                    }`}
-                  >
-                    Analysis
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setView("predictions")}
-                    className={`rounded-full px-3 py-1 ${
-                      view === "predictions"
-                        ? "bg-emerald-500 text-black"
-                        : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                    }`}
-                  >
-                    Predictions
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setView("history")}
-                    className={`rounded-full px-3 py-1 ${
-                      view === "history"
-                        ? "bg-emerald-500 text-black"
-                        : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                    }`}
-                  >
-                    History
-                  </button>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-semibold text-emerald-400">
+                      {latestSnapshotForSelected.quality}
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {formatDate(latestSnapshotForSelected.createdAt)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    Most recent snapshot for {selectedPair}.
+                  </div>
                 </>
+              ) : (
+                <div className="text-xs text-slate-500 mt-1">
+                  No snapshots yet.
+                </div>
               )}
             </div>
-          )}
 
-          {/* Dashboard view */}
-          {(!selectedPair || view === "dashboard") && (
-            <section className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Weekly performance
-                  </p>
-                  <p className="mt-2 text-2xl font-bold text-emerald-400">
-                    {historyEntries.length}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    Analyses stored for the currently selected pair.
-                  </p>
+            {/* Checklist progress */}
+            <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-4 py-3 col-span-1 lg:col-span-2">
+              <div className="text-xs font-semibold text-slate-300 mb-2">
+                Checklist progress
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden mb-1">
+                <div
+                  className="h-full bg-emerald-500 transition-all"
+                  style={{ width: `${checklistPercent}%` }}
+                />
+              </div>
+              <div className="text-[11px] text-slate-400">
+                {checklistTotal > 0 ? (
+                  <>
+                    {checklistDone}/{checklistTotal} items green. When every item
+                    is green, you&apos;re ready to execute (for learning only,
+                    not financial advice).
+                  </>
+                ) : (
+                  <>
+                    When every item is green, you&apos;re ready to execute (for
+                    learning only, not financial advice).
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Main workspace depending on view */}
+          {view === "dashboard" ? (
+            <div className="rounded-3xl bg-slate-950/60 border border-slate-800 px-5 py-6 text-sm text-slate-300">
+              <div className="font-semibold mb-2">How to use this dashboard</div>
+              <ul className="list-disc list-inside space-y-1 text-xs text-slate-400">
+                <li>Select a pair on the left to start an analysis.</li>
+                <li>
+                  Upload your multi-timeframe screenshots and ask the AI targeted
+                  questions (liquidity, bias, entries, SL/TP).
+                </li>
+                <li>
+                  Each analysis is stored as a snapshot so you can review how the
+                  story evolved over time.
+                </li>
+              </ul>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Workflow steps */}
+              <div className="flex items-center gap-3 text-xs text-slate-400">
+                <div className="flex items-center gap-2">
+                  <div className="h-6 w-6 rounded-full border border-emerald-500 flex items-center justify-center text-[11px] text-emerald-300">
+                    1
+                  </div>
+                  <span className="font-medium text-slate-200">
+                    Upload screenshots
+                  </span>
                 </div>
-
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Latest quality
-                  </p>
-                  <p className="mt-2 text-2xl font-bold text-emerald-400">
-                    {analysis?.qualityLabel || "–"}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    {historyEntries[0]
-                      ? fmtDate(historyEntries[0].createdAt)
-                      : "No snapshots yet"}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Checklist progress
-                  </p>
-                  <p className="mt-2 text-2xl font-bold text-emerald-400">
-                    {totalChecklist
-                      ? `${completedChecklist}/${totalChecklist}`
-                      : "—"}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    When every item is green, you&apos;re ready to execute
-                    (for learning only, not financial advice).
-                  </p>
+                <div className="h-px flex-1 bg-slate-800" />
+                <div className="flex items-center gap-2">
+                  <div className="h-6 w-6 rounded-full border border-slate-600 flex items-center justify-center text-[11px] text-slate-300">
+                    2
+                  </div>
+                  <span>Run analysis</span>
                 </div>
               </div>
-            </section>
-          )}
 
-          {/* Upload view */}
-          {selectedPair && view === "upload" && (
-            <section className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-              <div className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <h2 className="text-sm font-semibold text-zinc-100">
-                  1. Timeframes & screenshots
-                </h2>
-                <p className="text-xs text-zinc-500">
-                  Select the timeframes you captured, then upload or paste
-                  the actual TradingView charts. Screenshots stay attached
-                  to this pair until you clear them.
-                </p>
-
-                <div className="flex flex-wrap gap-1">
-                  {allTimeframes.map((tf) => {
-                    const active = selectedTimeframes.includes(tf);
-                    return (
-                      <button
-                        key={tf}
-                        type="button"
-                        onClick={() => toggleTf(tf)}
-                        className={`rounded-full px-2.5 py-0.5 text-[11px] ${
-                          active
-                            ? "bg-emerald-500 text-black"
-                            : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                        }`}
-                      >
-                        {tf}
-                      </button>
-                    );
-                  })}
+              {/* Timeframes + upload */}
+              <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-5 py-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="font-semibold text-sm">
+                    {selectedPair} · Timeframes &amp; screenshots
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Select the structure you&apos;re studying, then upload or
+                    paste the actual TradingView charts.
+                  </div>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-zinc-300">
-                      Upload chart screenshots
-                    </p>
+                {/* Timeframe pills */}
+                <div className="mb-4">
+                  <div className="text-[11px] text-slate-400 mb-1">
+                    Timeframe stack
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {timeframes.map((tf) => {
+                      const active = selectedTFs.includes(tf);
+                      return (
+                        <button
+                          key={tf}
+                          type="button"
+                          onClick={() => handleTimeframeToggle(tf)}
+                          className={`px-3 py-1 rounded-full text-[11px] border transition ${
+                            active
+                              ? "bg-emerald-500/20 border-emerald-500 text-emerald-100"
+                              : "bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800"
+                          }`}
+                        >
+                          {tf}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Upload / paste */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* File input */}
+                  <div className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-4">
+                    <div className="text-xs font-semibold mb-2">
+                      1. Upload chart screenshots
+                    </div>
                     <input
                       type="file"
                       multiple
                       accept="image/*"
-                      onChange={handleFileChange}
-                      className="block w-full text-xs text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-emerald-600 file:px-3 file:py-1 file:text-xs file:font-medium file:text-black hover:file:bg-emerald-500"
+                      onChange={handleFilesChosen}
+                      className="text-xs text-slate-200"
                     />
-                    <p className="text-[11px] text-zinc-500">
-                      You can select multiple images at once (H4, H1, M15,
-                      M5, etc).
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      You can select multiple images at once (H4, H1, M15, M5,
+                      etc). They stay attached to this pair until you remove
+                      them.
                     </p>
                   </div>
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-zinc-300">
-                      Or paste screenshots from clipboard
-                    </p>
-                    <ClipboardPasteZone onImages={handlePasteImages} />
+
+                  {/* Paste from clipboard */}
+                  <div className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-4">
+                    <div className="text-xs font-semibold mb-2">
+                      2. Or paste screenshots from clipboard
+                    </div>
+                    <div
+                      className="border border-dashed border-slate-700 rounded-xl bg-slate-950/80 px-3 py-6 text-center text-[11px] text-slate-400 cursor-text"
+                      onPaste={handlePaste}
+                      tabIndex={0}
+                    >
+                      <div className="mb-2 font-medium text-slate-200">
+                        Paste screenshots (Ctrl+V / Cmd+V)
+                      </div>
+                      <div>
+                        In TradingView, copy a screenshot to clipboard, click
+                        this box, then press Ctrl+V or Cmd+V. They will be
+                        attached to <span className="font-semibold">{selectedPair}</span>{" "}
+                        on the server.
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {chartImages.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-semibold text-zinc-300">
-                        Attached screenshots ({chartImages.length})
-                      </p>
+                {/* Attached screenshots */}
+                <div className="mt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-slate-200">
+                      Attached screenshots ({screenshots.length})
+                    </div>
+                    {screenshots.length > 0 && (
                       <button
                         type="button"
-                        onClick={clearImages}
-                        className="text-[11px] text-red-400 hover:text-red-300"
+                        onClick={handleRemoveAllScreenshots}
+                        className="text-[11px] text-rose-400 hover:text-rose-300"
                       >
                         Remove all
                       </button>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-3">
-                      {chartImages.map((img) => (
-                        <div
-                          key={img.id}
-                          className="overflow-hidden rounded-lg border border-zinc-800 bg-black"
-                        >
-                          <Image
-                            src={img.dataUrl}
-                            alt={img.name}
-                            width={320}
-                            height={200}
-                            unoptimized
-                            className="h-32 w-full object-cover"
-                          />
-                          <p className="truncate px-2 py-1 text-[10px] text-zinc-400">
-                            {img.name}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
+                    )}
                   </div>
-                )}
-
-                <div className="mt-2 flex items-center justify-between rounded-xl bg-gradient-to-r from-emerald-500/10 to-emerald-500/0 px-3 py-2">
-                  <div className="text-xs text-zinc-400">
-                    {chartImages.length === 0
-                      ? "No charts yet. Add screenshots to enable analysis."
-                      : "Ready. Click analyze to generate a structured playbook for this pair."}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleAnalyze}
-                    disabled={loading || !chartImages.length}
-                    className={`rounded-full px-4 py-1 text-xs font-semibold ${
-                      loading || !chartImages.length
-                        ? "bg-zinc-800 text-zinc-500"
-                        : "bg-emerald-500 text-black hover:bg-emerald-400"
-                    }`}
-                  >
-                    {loading ? "Analyzing…" : "Analyze charts"}
-                  </button>
-                </div>
-
-                {error && (
-                  <p className="text-xs text-red-400">⚠ {error}</p>
-                )}
-              </div>
-
-              <div className="space-y-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <h2 className="text-sm font-semibold text-zinc-100">
-                  📝 What do you want to know?
-                </h2>
-                <p className="text-xs text-zinc-500">
-                  Optional prompt to steer the analysis.
-                </p>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={8}
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-black/60 p-2 text-xs text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/60"
-                  placeholder={
-                    "- Tell me the higher timeframe bias and why.\n" +
-                    "- Is there liquidity being grabbed here?\n" +
-                    "- Where is a high-probability entry with SL/TP idea?"
-                  }
-                />
-                <p className="text-[10px] text-zinc-500">
-                  The text above is sent along with your screenshots to the
-                  AI analyzer.
-                </p>
-              </div>
-            </section>
-          )}
-
-          {/* Analysis view */}
-          {selectedPair && view === "analysis" && analysis && (
-            <section className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Quality score
-                  </p>
-                  <p className="mt-2 text-2xl font-bold text-emerald-400">
-                    {analysis.qualityLabel}{" "}
-                    <span className="text-sm text-zinc-400">
-                      ({analysis.qualityScore.toFixed(0)})
-                    </span>
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {analysis.qualityReason}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Higher timeframe bias
-                  </p>
-                  <div className="mt-2 max-h-24 overflow-auto text-xs text-zinc-100">
-                    {renderTextBlocks(analysis.htfBias)}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <p className="text-xs font-semibold text-zinc-400">
-                    Candle timers
-                  </p>
-                  <div className="mt-2 space-y-1 text-xs text-zinc-200">
-                    {selectedTimeframes.map((tf) => {
-                      const end = candleEnds[tf];
-                      if (!end) return null;
-                      const remaining = end - nowTs;
-                      return (
-                        <div
-                          key={tf}
-                          className="flex items-center justify-between"
-                        >
-                          <span className="text-zinc-400">{tf}</span>
-                          <span
-                            className={
-                              remaining > 0
-                                ? "text-emerald-400"
-                                : "text-zinc-500"
-                            }
-                          >
-                            {formatRemaining(remaining)}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <p className="mt-1 text-[10px] text-zinc-500">
-                    When a candle closes, take a fresh screenshot to
-                    update the story.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-                <div className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <h3 className="text-sm font-semibold text-zinc-100">
-                    Liquidity story & entry plan
-                  </h3>
-
-                  <div className="space-y-3 text-sm text-zinc-100">
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Overview
-                      </p>
-                      {renderTextBlocks(analysis.overview)}
+                  {screenshots.length === 0 ? (
+                    <div className="text-[11px] text-slate-500">
+                      No screenshots yet. Upload or paste charts to get started.
                     </div>
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Liquidity & structure
-                      </p>
-                      {renderTextBlocks(analysis.liquidityStory)}
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Entry idea
-                      </p>
-                      {renderTextBlocks(analysis.entryPlan)}
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Risk management
-                      </p>
-                      {renderTextBlocks(analysis.riskManagement)}
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Red flags / avoid if…
-                      </p>
-                      {renderTextBlocks(analysis.redFlags)}
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs font-semibold text-zinc-400">
-                        Next-move scenario
-                      </p>
-                      {renderTextBlocks(analysis.nextMove)}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <h3 className="text-sm font-semibold text-zinc-100">
-                    Checklist for this setup
-                  </h3>
-                  {checklist.length === 0 ? (
-                    <p className="text-xs text-zinc-500">
-                      No checklist items returned for this analysis.
-                    </p>
                   ) : (
-                    <ul className="space-y-1 text-xs">
-                      {checklist.map((item, i) => (
-                        <li key={i} className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleChecklistItem(i)}
-                            className={`mt-[2px] h-4 w-4 rounded border text-[10px] ${
-                              item.done
-                                ? "border-emerald-500 bg-emerald-500 text-black"
-                                : "border-zinc-600 bg-black text-transparent"
-                            }`}
-                          >
-                            ✓
-                          </button>
-                          <span
-                            className={
-                              item.done
-                                ? "text-zinc-400 line-through"
-                                : "text-zinc-100"
-                            }
-                          >
-                            {item.text}
-                          </span>
-                        </li>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {screenshots.map((shot) => (
+                        <div
+                          key={shot.id}
+                          className="rounded-xl border border-slate-700 overflow-hidden bg-slate-950/80"
+                        >
+                          <div className="relative h-32 bg-black">
+                            <Image
+                              src={shot.previewUrl}
+                              alt="screenshot"
+                              fill
+                              className="object-cover"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between px-3 py-2 text-[11px] text-slate-300">
+                            <span className="truncate">
+                              {shot.file.name || "image"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveScreenshot(shot.id)}
+                              className="text-rose-400 hover:text-rose-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
                       ))}
-                    </ul>
+                    </div>
                   )}
-                  <p className="mt-2 text-[10px] text-zinc-500">
-                    Green = satisfied. If anything stays unchecked, it&apos;s
-                    a learning setup, not an A+ execution.
-                  </p>
+                </div>
+
+                {/* Prompt + analyze */}
+                <div className="mt-4 flex flex-col md:flex-row gap-4 items-stretch">
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold mb-1">
+                      📝 What do you want to know?
+                    </div>
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      rows={5}
+                      className="w-full rounded-xl bg-slate-950/80 border border-slate-700 text-xs px-3 py-2 outline-none focus:border-emerald-500 resize-none"
+                    />
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      Ask specific questions about bias, liquidity, entries,
+                      invalid FVGS, inducement, SL/TP, etc.
+                    </div>
+                  </div>
+
+                  <div className="w-full md:w-48 flex flex-col justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isAnalyzing || screenshots.length === 0}
+                      onClick={handleAnalyze}
+                      className={`w-full rounded-full px-4 py-3 text-sm font-semibold transition ${
+                        isAnalyzing || screenshots.length === 0
+                          ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                          : "bg-emerald-500 text-black hover:bg-emerald-400"
+                      }`}
+                    >
+                      {isAnalyzing ? "Analyzing..." : "Analyze charts"}
+                    </button>
+                    <div className="text-[11px] text-slate-500">
+                      Ready. Click analyze to generate a structured playbook for{" "}
+                      <span className="font-semibold">{selectedPair}</span>.
+                    </div>
+                    {analysisError && (
+                      <div className="text-[11px] text-rose-400">
+                        {analysisError}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {analysis.screenshotGuides?.length > 0 && (
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <h3 className="mb-2 text-sm font-semibold text-zinc-100">
-                    Screenshot & image references
-                  </h3>
-                  <p className="mb-3 text-xs text-zinc-500">
-                    Use this as a mini shot-list when replaying the chart
-                    or pausing the YouTube video.
-                  </p>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {analysis.screenshotGuides.map((g, i) => (
-                      <div
-                        key={i}
-                        className="space-y-2 rounded-xl border border-zinc-800 bg-black/40 p-3"
-                      >
-                        <div className="flex h-28 items-center justify-center rounded-lg border border-dashed border-zinc-700 bg-zinc-950 text-[11px] text-zinc-500">
-                          Image placeholder – capture this shot in
-                          TradingView
+              {/* Analysis ebook */}
+              {currentAnalysis && (
+                <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-5 py-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Multi timeframe playbook for {currentAnalysis.pair}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {formatDate(currentAnalysis.createdAt)} ·{" "}
+                        <span className="font-semibold">
+                          Quality: {currentAnalysis.quality}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 text-sm text-slate-200">
+                    {currentAnalysis.sections.map((section, idx) => (
+                      <div key={idx} className="border-t border-slate-800 pt-4">
+                        <div className="font-semibold text-slate-100 mb-1">
+                          {idx + 1}. {section.title}
                         </div>
-                        <p className="text-xs font-semibold text-zinc-100">
-                          {g.title}
-                        </p>
-                        <p className="text-[11px] text-zinc-400">
-                          {g.description}
-                        </p>
-                        {g.timeframeHint && (
-                          <p className="text-[10px] text-zinc-500">
-                            TF hint: {g.timeframeHint}
-                          </p>
+                        <div className="text-[13px] text-slate-300 whitespace-pre-line">
+                          {section.body}
+                        </div>
+                        {section.checklist && section.checklist.length > 0 && (
+                          <ul className="mt-2 text-[12px] space-y-1">
+                            {section.checklist.map((item, i) => (
+                              <li
+                                key={i}
+                                className="flex items-center gap-2 text-slate-300"
+                              >
+                                <span
+                                  className={`h-3 w-3 rounded-full border flex items-center justify-center text-[9px] ${
+                                    item.done
+                                      ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
+                                      : "border-slate-600 text-slate-500"
+                                  }`}
+                                >
+                                  {item.done ? "✓" : ""}
+                                </span>
+                                <span>{item.label}</span>
+                              </li>
+                            ))}
+                          </ul>
                         )}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-
-              {analysis.learningQueries?.length > 0 && (
-                <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <h3 className="mb-2 text-sm font-semibold text-zinc-100">
-                    Extra learning clips & images
-                  </h3>
-                  <p className="mb-3 text-xs text-zinc-500">
-                    These links search YouTube / TikTok / Instagram images
-                    for similar concepts, so you can see more examples of
-                    the same pattern.
-                  </p>
-                  <div className="space-y-2 text-xs">
-                    {analysis.learningQueries.map((q, i) => (
-                      <div
-                        key={i}
-                        className="rounded-lg border border-zinc-800 bg-black/40 p-2"
-                      >
-                        <p className="text-[11px] font-semibold text-zinc-200">
-                          {q.concept}
-                        </p>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
-                          {q.platforms.map((p) => (
-                            <a
-                              key={p}
-                              href={buildSearchUrl(p, q.query)}
-                              target="_blank"
-                              className="rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800"
-                            >
-                              {p}
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </section>
+            </div>
           )}
-
-          {/* Predictions view */}
-          {selectedPair && view === "predictions" && analysis && (
-            <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-              <h3 className="text-sm font-semibold text-zinc-100">
-                Next possible move – study notes
-              </h3>
-              <p className="mt-1 text-xs text-zinc-500">
-                This is a learning prediction, not trading advice. Use it
-                to see how price actually played out vs. the idea.
-              </p>
-              <div className="mt-3 text-sm text-zinc-100">
-                {renderTextBlocks(analysis.nextMove)}
-              </div>
-            </section>
-          )}
-
-          {/* History view */}
-          {selectedPair && view === "history" && (
-            <section className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-              <h3 className="text-sm font-semibold text-zinc-100">
-                History for {selectedPair}
-              </h3>
-              {historyEntries.length === 0 ? (
-                <p className="text-xs text-zinc-500">
-                  No stored analyses yet. Once you run analysis, each run
-                  is saved here as a snapshot.
-                </p>
-              ) : (
-                <div className="space-y-2 text-xs">
-                  {historyEntries.map((e) => (
-                    <button
-                      key={e.id}
-                      type="button"
-                      onClick={() => {
-                        setAnalysis(e.analysis);
-                        setCandleEnds(e.candleEnds || {});
-                        setChartImages(e.chartImages || []);
-                        setChecklist(
-                          (e.checklistState || []).map((c) => ({
-                            text: c.text,
-                            done: !!c.done,
-                          })),
-                        );
-                        setSelectedTimeframes(
-                          e.timeframes.length
-                            ? e.timeframes
-                            : ["H4", "H1", "M15"],
-                        );
-                        setNotes(e.notes || "");
-                        setView("analysis");
-                      }}
-                      className="flex w-full items-center justify-between rounded-lg border border-zinc-800 bg-black/40 px-3 py-2 text-left hover:bg-zinc-900"
-                    >
-                      <div>
-                        <p className="font-medium text-zinc-100">
-                          {e.analysis.qualityLabel} setup
-                        </p>
-                        <p className="text-[11px] text-zinc-500">
-                          {fmtDate(e.createdAt)} · TFs:{" "}
-                          {e.timeframes.join(", ")}
-                        </p>
-                      </div>
-                      <span className="text-[11px] text-zinc-400">
-                        Score {e.analysis.qualityScore.toFixed(0)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-        </main>
-      </div>
+        </section>
+      </main>
     </div>
   );
 }
