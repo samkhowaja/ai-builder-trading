@@ -1,6 +1,10 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+} from "react";
 import Image from "next/image";
 
 // ───────────────────────────────
@@ -8,6 +12,7 @@ import Image from "next/image";
 // ───────────────────────────────
 
 type UploadImage = { name: string; dataUrl: string };
+
 type ChartImage = { id: string; name: string; dataUrl: string };
 
 type ChecklistItem = { text: string; satisfied: boolean };
@@ -34,7 +39,7 @@ type ChartAnalysis = {
   redFlags: string;
   nextMove: string;
   qualityScore: number;
-  qualityLabel: string; // "A+", "A", "B" etc
+  qualityLabel: string; // "A+", "A", "B" etc.
   qualityReason: string;
   checklist: ChecklistItem[];
   screenshotGuides: ScreenshotGuide[];
@@ -66,7 +71,22 @@ type ViewTab =
   | "predictions"
   | "history";
 
-type ProgressStep = 0 | 1 | 2 | 3; // 0 = nothing, 1 upload, 2 analyzed, 3 planned
+type ProgressStep = 0 | 1 | 2 | 3;
+
+// Local cache per pair (keeps things alive when you navigate away)
+type PairState = {
+  analysis: ChartAnalysis | null;
+  checklist: ChecklistState[];
+  chartImages: ChartImage[];
+  timeframes: string[];
+  notes: string;
+  candleEnds: Record<string, number>;
+  history: ChartAnalysisEntry[];
+};
+
+// ───────────────────────────────
+// Constants / helpers
+// ───────────────────────────────
 
 const TF_MINUTES: Record<string, number> = {
   M1: 1,
@@ -125,17 +145,8 @@ function buildSearchUrl(platform: string, query: string): string {
   }
 }
 
-function qualityRank(label: string | undefined): number {
-  if (!label) return 0;
-  const v = label.toUpperCase();
-  if (v.includes("A+")) return 3;
-  if (v.startsWith("A")) return 2;
-  if (v.startsWith("B")) return 1;
-  return 0;
-}
-
 // ───────────────────────────────
-// Clipboard paste zone
+// Clipboard paste panel
 // ───────────────────────────────
 
 function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
@@ -214,23 +225,23 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 }
 
 // ───────────────────────────────
-// Main page component
+// Main page
 // ───────────────────────────────
 
 export default function Page() {
-  // Sidebar
+  // Sidebar / global
   const [pairs, setPairs] = useState<string[]>([]);
   const [selectedPair, setSelectedPair] = useState<string | null>(null);
-
-  // Tabs for right side
   const [view, setView] = useState<ViewTab>("dashboard");
 
-  // Upload + analysis state
+  // Per-pair live state
   const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>([
     "H4",
     "H1",
     "M15",
   ]);
+  const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
   const [chartImages, setChartImages] = useState<ChartImage[]>([]);
   const [notes, setNotes] = useState<string>("");
   const [analysis, setAnalysis] = useState<ChartAnalysis | null>(null);
@@ -239,17 +250,21 @@ export default function Page() {
   const [historyEntries, setHistoryEntries] = useState<ChartAnalysisEntry[]>(
     [],
   );
+
+  // Local cache per pair so nothing is lost when switching pairs
+  const [pairStates, setPairStates] = useState<Record<string, PairState>>({});
+
+  // Meta
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // For timers
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Load pairs from API
+  // Load pairs from server or fallback
   useEffect(() => {
     const loadPairs = async () => {
       try {
@@ -273,11 +288,37 @@ export default function Page() {
         body: JSON.stringify({ pairs: next }),
       });
     } catch {
-      // ignore
+      // ignore in fallback mode
     }
   };
 
-  // Load analysis history when pair changes
+  // Cache current pair's state whenever it changes
+  useEffect(() => {
+    if (!selectedPair) return;
+    setPairStates((prev) => ({
+      ...prev,
+      [selectedPair]: {
+        analysis,
+        checklist,
+        chartImages,
+        timeframes: selectedTimeframes,
+        notes,
+        candleEnds,
+        history: historyEntries,
+      },
+    }));
+  }, [
+    selectedPair,
+    analysis,
+    checklist,
+    chartImages,
+    selectedTimeframes,
+    notes,
+    candleEnds,
+    historyEntries,
+  ]);
+
+  // Load state when pair changes (first from cache, then optionally from DB)
   useEffect(() => {
     const loadForPair = async () => {
       if (!selectedPair) {
@@ -286,10 +327,37 @@ export default function Page() {
         setChartImages([]);
         setHistoryEntries([]);
         setCandleEnds({});
+        setNotes("");
         setView("dashboard");
         return;
       }
 
+      // 1) Hydrate from local cache if present
+      const cached = pairStates[selectedPair];
+      if (cached) {
+        setAnalysis(cached.analysis);
+        setChecklist(cached.checklist);
+        setChartImages(cached.chartImages);
+        setSelectedTimeframes(
+          cached.timeframes.length ? cached.timeframes : ["H4", "H1", "M15"],
+        );
+        setNotes(cached.notes);
+        setCandleEnds(cached.candleEnds);
+        setHistoryEntries(cached.history);
+        setView(cached.analysis ? "analysis" : "upload");
+      } else {
+        // New pair → clean upload state
+        setAnalysis(null);
+        setChecklist([]);
+        setChartImages([]);
+        setHistoryEntries([]);
+        setCandleEnds({});
+        setNotes("");
+        setSelectedTimeframes(["H4", "H1", "M15"]);
+        setView("upload");
+      }
+
+      // 2) Try to hydrate from DB if available
       try {
         const res = await fetch(
           `/api/chart-analyses?pair=${encodeURIComponent(
@@ -297,50 +365,38 @@ export default function Page() {
           )}&history=1`,
         );
         if (!res.ok) throw new Error();
-        const data:
-          | { entries: ChartAnalysisEntry[] }
-          | { entry: ChartAnalysisEntry | null } = await res.json();
+        const data = await res.json();
+        const source = data.source as string | undefined;
+        if (source === "fallback") return; // no DB, only local cache
 
         let latest: ChartAnalysisEntry | null = null;
+
         if ("entries" in data && Array.isArray(data.entries)) {
-          setHistoryEntries(data.entries);
           latest = data.entries[0] ?? null;
+          setHistoryEntries(data.entries);
         } else if ("entry" in data) {
           latest = data.entry;
           setHistoryEntries(latest ? [latest] : []);
         }
 
-        if (!latest) {
-          // no previous analysis
-          setAnalysis(null);
-          setChecklist([]);
-          setChartImages([]);
-          setCandleEnds({});
-          setView("upload");
-          return;
-        }
+        if (!latest) return;
 
         setAnalysis(latest.analysis);
         setCandleEnds(latest.candleEnds || {});
         setChartImages(latest.chartImages || []);
         setNotes(latest.notes || "");
         setSelectedTimeframes(
-          latest.timeframes.length ? latest.timeframes : selectedTimeframes,
+          latest.timeframes.length ? latest.timeframes : ["H4", "H1", "M15"],
         );
         setChecklist(
-          (latest.checklistState || []).map((c) => ({
+          (latest.checklistState || []).map((c: any) => ({
             text: c.text,
             done: !!c.done,
           })),
         );
         setView("analysis");
       } catch {
-        setAnalysis(null);
-        setChecklist([]);
-        setChartImages([]);
-        setCandleEnds({});
-        setHistoryEntries([]);
-        setView("upload");
+        // ignore errors; local cache still works
       }
     };
 
@@ -348,23 +404,23 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
 
-  // Derived: quality by pair (for Setup column)
+  // Derived: quality label per pair from cache
   const pairQuality: Record<string, string> = {};
-  historyEntries.forEach((e) => {
-    if (!pairQuality[e.pair]) {
-      pairQuality[e.pair] = e.analysis.qualityLabel || "";
-    }
-  });
+  for (const [symbol, state] of Object.entries(pairStates)) {
+    const label =
+      state.history[0]?.analysis?.qualityLabel ||
+      state.analysis?.qualityLabel;
+    if (label) pairQuality[symbol] = label;
+  }
 
-  // Handle timeframes
-  const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+  // Timeframe toggle
   const toggleTf = (tf: string) => {
     setSelectedTimeframes((prev) =>
       prev.includes(tf) ? prev.filter((x) => x !== tf) : [...prev, tf],
     );
   };
 
-  // Handle images
+  // File / paste handling
   const addFileAsImage = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -391,7 +447,7 @@ export default function Page() {
     setError(null);
   };
 
-  // Analyze
+  // Analyze button
   const saveSnapshot = async (
     analysisToSave: ChartAnalysis,
     checklistToSave: ChecklistState[],
@@ -413,7 +469,7 @@ export default function Page() {
         }),
       });
     } catch {
-      // ignore
+      // ignore in fallback mode
     }
   };
 
@@ -513,11 +569,10 @@ export default function Page() {
       hour12: false,
     });
 
-  // Sidebar row for each pair (TradingView-style)
+  // Sidebar row
   const renderPairRow = (pair: string) => {
     const active = pair === selectedPair;
-    const label = historyEntries.find((e) => e.pair === pair)?.analysis
-      ?.qualityLabel;
+    const label = pairQuality[pair];
 
     return (
       <button
@@ -542,7 +597,6 @@ export default function Page() {
     );
   };
 
-  // Helper to render text blocks from analysis
   const renderTextBlocks = (value?: string) =>
     (value || "")
       .split(/\n\s*\n/)
@@ -605,6 +659,7 @@ export default function Page() {
             onClick={() => {
               setSelectedPair(null);
               setView("dashboard");
+              setError(null);
             }}
             className={`mb-4 flex w-full items-center justify-between rounded-xl px-3 py-3 text-left text-sm ${
               view === "dashboard" && !selectedPair
@@ -635,7 +690,7 @@ export default function Page() {
 
         {/* Main content */}
         <main className="flex-1 space-y-4">
-          {/* Progress bar when a pair is selected */}
+          {/* Workflow bar */}
           {selectedPair && (
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-3">
               <div className="mb-2 flex items-center justify-between">
@@ -686,7 +741,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* Tabs under progress when pair selected */}
+          {/* Tabs under workflow */}
           {selectedPair && (
             <div className="flex items-center gap-2 text-xs">
               <button
@@ -743,10 +798,9 @@ export default function Page() {
             </div>
           )}
 
-          {/* Views */}
+          {/* Dashboard view */}
           {(!selectedPair || view === "dashboard") && (
             <section className="space-y-4">
-              {/* Simple dashboard cards */}
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                   <p className="text-xs font-semibold text-zinc-400">
@@ -768,10 +822,9 @@ export default function Page() {
                     {analysis?.qualityLabel || "–"}
                   </p>
                   <p className="text-xs text-zinc-500">
-                    Updated at{" "}
                     {historyEntries[0]
                       ? fmtDate(historyEntries[0].createdAt)
-                      : "—"}
+                      : "No snapshots yet"}
                   </p>
                 </div>
 
@@ -793,9 +846,9 @@ export default function Page() {
             </section>
           )}
 
+          {/* Upload view */}
           {selectedPair && view === "upload" && (
             <section className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-              {/* Upload + TFs */}
               <div className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                 <h2 className="text-sm font-semibold text-zinc-100">
                   1. Timeframes & screenshots
@@ -913,7 +966,6 @@ export default function Page() {
                 )}
               </div>
 
-              {/* Prompt box */}
               <div className="space-y-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                 <h2 className="text-sm font-semibold text-zinc-100">
                   📝 What do you want to know?
@@ -940,9 +992,9 @@ export default function Page() {
             </section>
           )}
 
+          {/* Analysis view */}
           {selectedPair && view === "analysis" && analysis && (
             <section className="space-y-4">
-              {/* Top summary */}
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                   <p className="text-xs font-semibold text-zinc-400">
@@ -1003,7 +1055,6 @@ export default function Page() {
                 </div>
               </div>
 
-              {/* Story + checklist */}
               <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
                 <div className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                   <h3 className="text-sm font-semibold text-zinc-100">
@@ -1093,7 +1144,6 @@ export default function Page() {
                 </div>
               </div>
 
-              {/* Screenshot shot list */}
               {analysis.screenshotGuides?.length > 0 && (
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                   <h3 className="mb-2 text-sm font-semibold text-zinc-100">
@@ -1101,8 +1151,7 @@ export default function Page() {
                   </h3>
                   <p className="mb-3 text-xs text-zinc-500">
                     Use this as a mini shot-list when replaying the chart
-                    or pausing the YouTube video. You can recreate these as
-                    slides or a study journal.
+                    or pausing the YouTube video.
                   </p>
                   <div className="grid gap-3 md:grid-cols-2">
                     {analysis.screenshotGuides.map((g, i) => (
@@ -1131,7 +1180,6 @@ export default function Page() {
                 </div>
               )}
 
-              {/* Learning resources */}
               {analysis.learningQueries?.length > 0 && (
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                   <h3 className="mb-2 text-sm font-semibold text-zinc-100">
@@ -1171,23 +1219,23 @@ export default function Page() {
             </section>
           )}
 
+          {/* Predictions view */}
           {selectedPair && view === "predictions" && analysis && (
-            <section className="space-y-4">
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <h3 className="text-sm font-semibold text-zinc-100">
-                  Next possible move – study notes
-                </h3>
-                <p className="mt-1 text-xs text-zinc-500">
-                  This is a learning prediction, not trading advice. Use it
-                  to see how price actually played out vs. the idea.
-                </p>
-                <div className="mt-3 text-sm text-zinc-100">
-                  {renderTextBlocks(analysis.nextMove)}
-                </div>
+            <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+              <h3 className="text-sm font-semibold text-zinc-100">
+                Next possible move – study notes
+              </h3>
+              <p className="mt-1 text-xs text-zinc-500">
+                This is a learning prediction, not trading advice. Use it
+                to see how price actually played out vs. the idea.
+              </p>
+              <div className="mt-3 text-sm text-zinc-100">
+                {renderTextBlocks(analysis.nextMove)}
               </div>
             </section>
           )}
 
+          {/* History view */}
           {selectedPair && view === "history" && (
             <section className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
               <h3 className="text-sm font-semibold text-zinc-100">
@@ -1217,8 +1265,9 @@ export default function Page() {
                         setSelectedTimeframes(
                           e.timeframes.length
                             ? e.timeframes
-                            : selectedTimeframes,
+                            : ["H4", "H1", "M15"],
                         );
+                        setNotes(e.notes || "");
                         setView("analysis");
                       }}
                       className="flex w-full items-center justify-between rounded-lg border border-zinc-800 bg-black/40 px-3 py-2 text-left hover:bg-zinc-900"
