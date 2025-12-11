@@ -1,7 +1,6 @@
 // lib/db.ts
 import { createClient } from "@vercel/postgres";
 
-// Get whichever connection string is available
 function getConnectionString() {
   return (
     process.env.POSTGRES_URL_NON_POOLING ||
@@ -15,7 +14,6 @@ export function hasDb() {
   return !!getConnectionString();
 }
 
-// Always talk to the DB through a dedicated client
 export async function dbQuery<T = any>(
   strings: TemplateStringsArray,
   ...values: any[]
