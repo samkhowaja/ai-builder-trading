@@ -12,6 +12,7 @@ export async function dbQuery<T = any>(
   strings: TemplateStringsArray,
   ...values: any[]
 ): Promise<{ rows: T[] }> {
+  // Fallback mode: no DB configured
   if (!hasDb()) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(
@@ -21,6 +22,7 @@ export async function dbQuery<T = any>(
     return { rows: [] as T[] };
   }
 
-  const result = await sql<T>(strings, ...values);
+  // We don't pass a generic into sql<…>; we just cast the rows when returning.
+  const result = await sql(strings, ...values);
   return { rows: result.rows as T[] };
 }
