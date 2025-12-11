@@ -1,13 +1,12 @@
 // lib/db.ts
 import { createClient } from "@vercel/postgres";
 
-// We consider DB available if any supported URL exists
+// Get whichever connection string is available
 function getConnectionString() {
-  // Prefer the explicit non-pooling URL if Vercel created one
   return (
     process.env.POSTGRES_URL_NON_POOLING ||
-    process.env.POSTGRES_URL ||         // works for Prisma / direct too
-    process.env.DATABASE_URL ||         // fallback if you ever use this name
+    process.env.POSTGRES_URL ||
+    process.env.DATABASE_URL ||
     ""
   );
 }
