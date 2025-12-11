@@ -1,26 +1,10 @@
-// app/api/analyze-charts/route.ts
+// app/api/chart-analyses/route.ts
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
+import { sql } from "@vercel/postgres";
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-type UploadImage = {
-  name: string;
-  dataUrl: string; // data:image/png;base64,...
-};
-
-type Body = {
-  pair: string;
-  timeframes: string[];
-  notes?: string;
-  images: UploadImage[];
-};
-
-type ChecklistItem = {
+type ChecklistItemState = {
   text: string;
-  satisfied: boolean;
+  done: boolean;
 };
 
 type ScreenshotGuide = {
@@ -46,146 +30,196 @@ type ChartAnalysis = {
   qualityScore: number;
   qualityLabel: string;
   qualityReason: string;
-  checklist: ChecklistItem[];
+  checklist: { text: string; satisfied: boolean }[];
   screenshotGuides: ScreenshotGuide[];
   learningQueries: LearningResourceQuery[];
 };
 
+type ChartImage = {
+  id: string;
+  name: string;
+  dataUrl: string;
+};
+
+type SaveBody = {
+  pair: string;
+  timeframes: string[];
+  notes: string;
+  analysis: ChartAnalysis;
+  candleEnds: Record<string, number>;
+  checklistState: ChecklistItemState[];
+  chartImages: ChartImage[];
+};
+
+type ChartAnalysisEntry = {
+  id: string;
+  pair: string;
+  timeframes: string[];
+  notes: string;
+  analysis: ChartAnalysis;
+  candleEnds: Record<string, number>;
+  checklistState: ChecklistItemState[];
+  chartImages: ChartImage[];
+  createdAt: string;
+};
+
+async function ensureChartTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS chart_analyses (
+      id text PRIMARY KEY,
+      pair text NOT NULL,
+      timeframes jsonb NOT NULL,
+      notes text,
+      analysis_json jsonb NOT NULL,
+      candle_ends_json jsonb,
+      checklist_state_json jsonb,
+      chart_images_json jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+  `;
+}
+
+function makeId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2);
+}
+
+// GET /api/chart-analyses?pair=EURUSD -> latest for that pair
+// GET /api/chart-analyses -> latest per pair for radar
+export async function GET(request: Request) {
+  try {
+    await ensureChartTable();
+    const { searchParams } = new URL(request.url);
+    const pair = searchParams.get("pair");
+
+    if (pair) {
+      const { rows } = await sql`
+        SELECT
+          id,
+          pair,
+          timeframes,
+          notes,
+          analysis_json,
+          candle_ends_json,
+          checklist_state_json,
+          chart_images_json,
+          created_at
+        FROM chart_analyses
+        WHERE pair = ${pair}
+        ORDER BY created_at DESC
+        LIMIT 1;
+      `;
+
+      if (rows.length === 0) {
+        return NextResponse.json({ entry: null });
+      }
+
+      const row = rows[0];
+      const entry: ChartAnalysisEntry = {
+        id: row.id as string,
+        pair: row.pair as string,
+        timeframes: ((row.timeframes as any) ?? []) as string[],
+        notes: (row.notes as string) || "",
+        analysis: (row.analysis_json as any) as ChartAnalysis,
+        candleEnds: ((row.candle_ends_json as any) ?? {}) as Record<
+          string,
+          number
+        >,
+        checklistState:
+          ((row.checklist_state_json as any) ?? []) as ChecklistItemState[],
+        chartImages:
+          ((row.chart_images_json as any) ?? []) as ChartImage[],
+        createdAt: (row.created_at as Date)?.toISOString?.() ??
+          String(row.created_at),
+      };
+
+      return NextResponse.json({ entry });
+    }
+
+    // Radar: latest per pair
+    const { rows } = await sql`
+      SELECT DISTINCT ON (pair)
+        pair,
+        analysis_json,
+        created_at
+      FROM chart_analyses
+      ORDER BY pair, created_at DESC;
+    `;
+
+    const entries = rows.map((row) => ({
+      pair: row.pair as string,
+      analysis: (row.analysis_json as any) as ChartAnalysis,
+      createdAt:
+        (row.created_at as Date)?.toISOString?.() ??
+        String(row.created_at),
+    }));
+
+    return NextResponse.json({ entries });
+  } catch (err: any) {
+    console.error("chart-analyses GET error:", err);
+    return NextResponse.json(
+      { error: err?.message || "Failed to load chart analyses." },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/chart-analyses  -> insert a snapshot (used for new analysis AND updates)
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as Body;
-    const { pair, timeframes, notes, images } = body;
+    await ensureChartTable();
+    const body = (await request.json()) as SaveBody;
 
-    if (!pair || !images || images.length === 0) {
+    const {
+      pair,
+      timeframes,
+      notes,
+      analysis,
+      candleEnds,
+      checklistState,
+      chartImages,
+    } = body;
+
+    if (!pair || !analysis) {
       return NextResponse.json(
-        { error: "pair and at least one image are required." },
+        { error: "pair and analysis are required." },
         { status: 400 },
       );
     }
 
-    const tfText =
-      timeframes && timeframes.length ? timeframes.join(", ") : "unknown";
+    const id = makeId();
 
-    const userText = `
-You are an experienced ICT and Smart Money trader and teacher.
-
-You are analyzing chart screenshots for ${pair}.
-The user has uploaded multiple images that most likely correspond to these timeframes: ${tfText}.
-
-User notes (if any):
-${notes || "No extra notes."}
-
-You must answer as a single JSON object with this exact shape:
-
-{
-  "overview": "high level summary of the setup and market conditions",
-  "htfBias": "clear explanation of higher timeframe bias and structure, including premium or discount, important zones, and session context",
-  "liquidityStory": "detailed narrative of liquidity grabs, inducement, stop hunts, where liquidity is resting above or below price, and how this fits into the bias",
-  "entryPlan": "step by step plan: which timeframe to execute on, what price behaviour to wait for, what qualifies the entry, and example SL and TP in risk multiples such as 1R, 2R",
-  "riskManagement": "how to size, what to avoid, and how to manage if the trade runs or stalls. Do not give specific lot sizes or financial advice.",
-  "redFlags": "when NOT to trade this setup: conditions, session issues, news, messy structure, conflicting signals, or low probability conditions.",
-  "nextMove": "educational description of the next possible move in if or then scenarios. Explain likely bullish and bearish paths, where this idea is invalidated, and what confirmation is needed. Do not give financial advice.",
-  "qualityScore": 0,
-  "qualityLabel": "A+, A, B, C, or D",
-  "qualityReason": "short justification of the quality label based on structure, liquidity, confluence, clarity of entry, and risk profile.",
-  "checklist": [
-    {
-      "text": "one clear condition that should be checked before entry",
-      "satisfied": true
-    }
-  ],
-  "screenshotGuides": [
-    {
-      "title": "short label for the screenshot overlay idea",
-      "description": "instructions like: draw a rectangle around this, mark this stop hunt, arrow from liquidity to fair value gap, label entry and stop.",
-      "timeframeHint": "optional higher timeframe label such as H4, H1, M15, or overall"
-    }
-  ],
-  "learningQueries": [
-    {
-      "concept": "short name such as valid bullish fair value gap or failed breakout",
-      "query": "search phrase a trader can use to find examples of this concept online",
-      "platforms": ["YouTube", "TikTok", "Instagram"]
-    }
-  ]
-}
-
-Checklist rules:
-- 6 to 12 items.
-- Each item is a concrete visual condition: session, liquidity taken, structure, fair value gap, displacement, candle behaviour.
-- Set "satisfied": true if you can clearly see that condition already fulfilled on the charts.
-- Set "satisfied": false if the trader still needs to wait for, or confirm, that condition.
-
-Screenshot guides:
-- Give 3 to 6 guides.
-- Think of them as drawing instructions that help a student see the idea on the screenshot.
-- You do not need real coordinates, just explain in words what should be highlighted.
-
-Quality scoring:
-- Use qualityScore on a scale from 0 to 100.
-- Map roughly: 95 to 100 is A+, 85 to 94 is A, 70 to 84 is B, 55 to 69 is C, below 55 is D.
-- Consider: alignment with higher timeframe bias, clean liquidity story, clear and simple execution, and absence of major red flags.
-
-Learning queries:
-- Focus on core ideas you used, such as valid or invalid fair value gaps, liquidity sweeps, breakouts and failed breakouts, order blocks, and entries you described.
-- For each concept, give a search phrase that would lead to good examples on platforms like YouTube, TikTok or Instagram.
-- Use at least 2 and at most 6 learningQueries.
-
-Do NOT include any explanation outside the JSON.
-`;
-
-    const content: any[] = [{ type: "text", text: userText }];
-
-    for (const img of images) {
-      content.push({
-        type: "image_url",
-        image_url: { url: img.dataUrl },
-      });
-      content.push({
-        type: "text",
-        text: `Above image file name: ${img.name}`,
-      });
-    }
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a precise, honest trading assistant. You explain ideas for study only. You never give personalised financial advice.",
-        },
-        {
-          role: "user",
-          content,
-        },
-      ],
-      temperature: 0.6,
-    });
-
-    const raw = completion.choices[0]?.message?.content ?? "{}";
-    let parsed: ChartAnalysis;
-
-    try {
-      parsed = JSON.parse(raw) as ChartAnalysis;
-    } catch (e) {
-      console.error("JSON parse error from OpenAI:", e, raw);
-      return NextResponse.json(
-        { error: "Failed to parse analysis JSON from model." },
-        { status: 500 },
+    await sql`
+      INSERT INTO chart_analyses (
+        id,
+        pair,
+        timeframes,
+        notes,
+        analysis_json,
+        candle_ends_json,
+        checklist_state_json,
+        chart_images_json
+      )
+      VALUES (
+        ${id},
+        ${pair},
+        ${JSON.stringify(timeframes || [])}::jsonb,
+        ${notes || ""},
+        ${JSON.stringify(analysis)}::jsonb,
+        ${JSON.stringify(candleEnds || {})}::jsonb,
+        ${JSON.stringify(checklistState || [])}::jsonb,
+        ${JSON.stringify(chartImages || [])}::jsonb
       );
-    }
+    `;
 
-    return NextResponse.json({ analysis: parsed });
+    return NextResponse.json({ id });
   } catch (err: any) {
-    console.error("analyze-charts error:", err);
-
-    const message =
-      err?.response?.data?.error?.message ||
-      err?.message ||
-      "Failed to analyze charts.";
-
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("chart-analyses POST error:", err);
+    return NextResponse.json(
+      { error: err?.message || "Failed to save chart analysis." },
+      { status: 500 },
+    );
   }
 }

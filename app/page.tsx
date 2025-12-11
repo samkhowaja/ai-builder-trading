@@ -56,20 +56,22 @@ type ChecklistItemState = {
   done: boolean;
 };
 
-type SavedAnalysis = {
+type ChartImage = {
+  id: string;
+  name: string;
+  dataUrl: string;
+};
+
+type ChartAnalysisEntry = {
+  id: string;
   pair: string;
   timeframes: string[];
   notes: string;
   analysis: ChartAnalysis;
   candleEnds: Record<string, number>;
   checklistState: ChecklistItemState[];
-  createdAt: number;
-};
-
-type ChartImage = {
-  id: string;
-  name: string;
-  dataUrl: string;
+  chartImages: ChartImage[];
+  createdAt: string;
 };
 
 type SetupSummary = {
@@ -80,10 +82,6 @@ type SetupSummary = {
   nextMoveSnippet: string;
   updatedAt: number;
 };
-
-const PAIRS_STORAGE_KEY = "ai-builder-pairs-v1";
-const ANALYSIS_STORAGE_KEY = "ai-builder-chart-analysis-v1";
-const SCREENS_STORAGE_KEY = "ai-builder-screens-v1";
 
 const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -204,7 +202,7 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
         <p className="text-[11px] text-zinc-500">
           In TradingView copy a screenshot to clipboard, click this box, and
           press Ctrl+V or Cmd+V. The images will be stored under the current
-          pair.
+          pair on the server.
         </p>
       ) : (
         <div className="mt-2 grid max-h-40 grid-cols-2 gap-2 overflow-auto">
@@ -229,7 +227,7 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 export default function HomePage() {
   const [pairs, setPairs] = useState<string[]>([]);
   const [pairsText, setPairsText] = useState("");
-  const [selectedPair, setSelectedPair] = useState<string>("EURUSD");
+  const [selectedPair, setSelectedPair] = useState<string>("");
 
   const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>([
     "H4",
@@ -256,56 +254,53 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, []);
 
-  // Load pairs from localStorage
+  // Load pairs from server on first render
   useEffect(() => {
-    try {
-      if (typeof window === "undefined") return;
-      const raw = window.localStorage.getItem(PAIRS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as string[];
-        const list = parsed.length ? parsed : defaultPairs;
-        setPairs(list);
-        setSelectedPair(list[0]);
-      } else {
+    const loadPairs = async () => {
+      try {
+        const res = await fetch("/api/pairs");
+        if (!res.ok) {
+          throw new Error("Failed to load pairs");
+        }
+        const data: { pairs: string[] } = await res.json();
+        const fromServer = data.pairs && data.pairs.length
+          ? data.pairs
+          : defaultPairs;
+        setPairs(fromServer);
+        setPairsText(fromServer.join("\n"));
+        if (!selectedPair && fromServer.length) {
+          setSelectedPair(fromServer[0]);
+        }
+      } catch (e) {
+        console.error("loadPairs error", e);
         setPairs(defaultPairs);
-        setSelectedPair(defaultPairs[0]);
+        setPairsText(defaultPairs.join("\n"));
+        if (!selectedPair) {
+          setSelectedPair(defaultPairs[0]);
+        }
       }
-    } catch (e) {
-      console.error("failed to load pairs", e);
-      setPairs(defaultPairs);
-      setSelectedPair(defaultPairs[0]);
-    }
-  }, []);
+    };
+    loadPairs();
+  }, [selectedPair]);
 
-  // Sync textarea with pairs
-  useEffect(() => {
-    setPairsText(pairs.join("\n"));
-  }, [pairs]);
-
-  // Save pairs
-  useEffect(() => {
+  // Build radar from server
+  const refreshSetupRadarFromServer = async () => {
     try {
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(PAIRS_STORAGE_KEY, JSON.stringify(pairs));
-      }
-    } catch (e) {
-      console.error("failed to save pairs", e);
-    }
-  }, [pairs]);
+      const res = await fetch("/api/chart-analyses");
+      if (!res.ok) return;
+      const data: {
+        entries: { pair: string; analysis: ChartAnalysis; createdAt: string }[];
+      } = await res.json();
 
-  // Helper to rebuild radar list from storage
-  const refreshSetupRadarFromStorage = () => {
-    try {
-      if (typeof window === "undefined") return;
-      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
-      if (!raw) {
+      if (!data.entries || !data.entries.length) {
         setSetupRadar([]);
         return;
       }
-      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
-      const list: SetupSummary[] = Object.values(store).map((sa) => {
+
+      const list: SetupSummary[] = data.entries.map((sa) => {
         const a = sa.analysis;
-        const qs = typeof a.qualityScore === "number" ? a.qualityScore : 0;
+        const qs =
+          typeof a.qualityScore === "number" ? a.qualityScore : 0;
         const label = a.qualityLabel || "N/A";
         const bias = (a.htfBias || "").slice(0, 160);
         const nm = (a.nextMove || "").slice(0, 160);
@@ -315,114 +310,87 @@ export default function HomePage() {
           qualityLabel: label,
           biasSnippet: bias,
           nextMoveSnippet: nm,
-          updatedAt: sa.createdAt,
+          updatedAt: Date.parse(sa.createdAt),
         };
       });
 
       list.sort((a, b) => b.qualityScore - a.qualityScore);
       setSetupRadar(list);
     } catch (e) {
-      console.error("Failed to build radar", e);
+      console.error("radar load error", e);
       setSetupRadar([]);
     }
   };
 
-  // Build radar on first load
   useEffect(() => {
-    refreshSetupRadarFromStorage();
+    refreshSetupRadarFromServer();
   }, []);
 
-  // Load screenshots whenever pair changes
+  // Load latest analysis for current pair from server
   useEffect(() => {
-    try {
-      if (typeof window === "undefined" || !selectedPair) return;
-      const raw = window.localStorage.getItem(SCREENS_STORAGE_KEY);
-      if (!raw) {
+    const loadPairAnalysis = async () => {
+      if (!selectedPair) {
+        setAnalysis(null);
+        setChecklist([]);
         setChartImages([]);
-        return;
-      }
-      const store = JSON.parse(raw) as Record<string, ChartImage[]>;
-      setChartImages(store[selectedPair] || []);
-    } catch (e) {
-      console.error("Failed to load screenshots", e);
-      setChartImages([]);
-    }
-  }, [selectedPair]);
-
-  // Save screenshots whenever they change
-  useEffect(() => {
-    try {
-      if (typeof window === "undefined" || !selectedPair) return;
-      const raw = window.localStorage.getItem(SCREENS_STORAGE_KEY);
-      const store = raw ? (JSON.parse(raw) as Record<string, ChartImage[]>) : {};
-      store[selectedPair] = chartImages;
-      window.localStorage.setItem(SCREENS_STORAGE_KEY, JSON.stringify(store));
-    } catch (e) {
-      console.error("Failed to save screenshots", e);
-    }
-  }, [chartImages, selectedPair]);
-
-  // Load saved analysis whenever pair changes
-  useEffect(() => {
-    try {
-      if (typeof window === "undefined" || !selectedPair) return;
-      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
-      if (!raw) {
-        setAnalysis(null);
-        setChecklist([]);
         setCandleEnds({});
         return;
       }
-      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
-      const saved = store[selectedPair];
-      if (!saved) {
+      try {
+        const res = await fetch(
+          `/api/chart-analyses?pair=${encodeURIComponent(selectedPair)}`,
+        );
+        if (!res.ok) {
+          throw new Error("Failed to load analysis");
+        }
+        const data: { entry: ChartAnalysisEntry | null } = await res.json();
+        if (!data.entry) {
+          setAnalysis(null);
+          setChecklist([]);
+          setChartImages([]);
+          setCandleEnds({});
+          return;
+        }
+        const entry = data.entry;
+        setAnalysis(entry.analysis);
+        setNotes(entry.notes || "");
+        setSelectedTimeframes(
+          entry.timeframes && entry.timeframes.length
+            ? entry.timeframes
+            : ["H4", "H1", "M15"],
+        );
+        setCandleEnds(entry.candleEnds || {});
+        setChartImages(entry.chartImages || []);
+        if (entry.checklistState && entry.checklistState.length) {
+          setChecklist(entry.checklistState);
+        } else {
+          const fromAnalysis =
+            entry.analysis.checklist?.map((item) => ({
+              text: item.text,
+              done: !!item.satisfied,
+            })) || [];
+          setChecklist(fromAnalysis);
+        }
+      } catch (e) {
+        console.error("loadPairAnalysis error", e);
         setAnalysis(null);
         setChecklist([]);
+        setChartImages([]);
         setCandleEnds({});
-        return;
       }
-
-      setAnalysis(saved.analysis);
-      setNotes(saved.notes || "");
-      if (saved.timeframes && saved.timeframes.length) {
-        setSelectedTimeframes(saved.timeframes);
-      }
-      setCandleEnds(saved.candleEnds || {});
-
-      if (saved.checklistState && saved.checklistState.length) {
-        setChecklist(saved.checklistState);
-      } else {
-        const fromAnalysis =
-          saved.analysis.checklist?.map((item) => ({
-            text: item.text,
-            done: !!item.satisfied,
-          })) || [];
-        setChecklist(fromAnalysis);
-      }
-    } catch (e) {
-      console.error("Failed to load saved analysis", e);
-      setAnalysis(null);
-      setChecklist([]);
-      setCandleEnds({});
-    }
+    };
+    loadPairAnalysis();
   }, [selectedPair]);
 
-  // Helper to persist checklist changes
-  const persistChecklistState = (next: ChecklistItemState[]) => {
+  const savePairsToServer = async (symbols: string[]) => {
     try {
-      if (typeof window === "undefined" || !selectedPair) return;
-      const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
-      if (!raw) return;
-      const store = JSON.parse(raw) as Record<string, SavedAnalysis>;
-      const prev = store[selectedPair];
-      if (!prev) return;
-      store[selectedPair] = { ...prev, checklistState: next };
-      window.localStorage.setItem(
-        ANALYSIS_STORAGE_KEY,
-        JSON.stringify(store),
-      );
+      await fetch("/api/pairs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairs: symbols }),
+      });
     } catch (e) {
-      console.error("Failed to persist checklist", e);
+      console.error("savePairs error", e);
     }
   };
 
@@ -433,10 +401,12 @@ export default function HomePage() {
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean);
     const unique = Array.from(new Set(list));
-    setPairs(unique);
+    setPairs(unique.length ? unique : defaultPairs);
     if (unique.length && !unique.includes(selectedPair)) {
       setSelectedPair(unique[0]);
     }
+    // persist watchlist to DB
+    savePairsToServer(unique.length ? unique : defaultPairs);
   };
 
   const toggleTimeframe = (tf: string) => {
@@ -475,6 +445,33 @@ export default function HomePage() {
   const handleClearImages = () => {
     setChartImages([]);
     setError(null);
+  };
+
+  const saveCurrentStateToServer = async (
+    analysisToSave: ChartAnalysis,
+    checklistStateToSave: ChecklistItemState[],
+    candleEndsToSave: Record<string, number>,
+  ) => {
+    try {
+      if (!selectedPair) return;
+      await fetch("/api/chart-analyses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pair: selectedPair,
+          timeframes: selectedTimeframes,
+          notes,
+          analysis: analysisToSave,
+          candleEnds: candleEndsToSave,
+          checklistState: checklistStateToSave,
+          chartImages,
+        }),
+      });
+      // After saving, refresh radar
+      refreshSetupRadarFromServer();
+    } catch (e) {
+      console.error("saveCurrentStateToServer error", e);
+    }
   };
 
   const handleAnalyze = async () => {
@@ -533,33 +530,12 @@ export default function HomePage() {
         setAnalysis(data.analysis);
         setChecklist(newChecklist);
 
-        // persist per pair
-        try {
-          if (typeof window !== "undefined") {
-            const raw = window.localStorage.getItem(ANALYSIS_STORAGE_KEY);
-            const store = raw
-              ? (JSON.parse(raw) as Record<string, SavedAnalysis>)
-              : {};
-            store[selectedPair] = {
-              pair: selectedPair,
-              timeframes: selectedTimeframes,
-              notes,
-              analysis: data.analysis,
-              candleEnds: newCandleEnds,
-              checklistState: newChecklist,
-              createdAt: now,
-            };
-            window.localStorage.setItem(
-              ANALYSIS_STORAGE_KEY,
-              JSON.stringify(store),
-            );
-          }
-        } catch (e) {
-          console.error("Failed to save analysis", e);
-        }
-
-        // rebuild radar with new data
-        refreshSetupRadarFromStorage();
+        // Save snapshot to DB (analysis + checklist + images)
+        await saveCurrentStateToServer(
+          data.analysis,
+          newChecklist,
+          newCandleEnds,
+        );
       } else {
         setError("Analysis response was empty.");
       }
@@ -586,7 +562,10 @@ export default function HomePage() {
       const next = prev.map((item, idx) =>
         idx === index ? { ...item, done: !item.done } : item,
       );
-      persistChecklistState(next);
+      if (analysis) {
+        // persist updated checklist to DB as a new snapshot
+        saveCurrentStateToServer(analysis, next, candleEnds);
+      }
       return next;
     });
   };
@@ -623,6 +602,12 @@ export default function HomePage() {
             >
               Models and learning
             </a>
+            <a
+              href="/video-models"
+              className="rounded-full px-3 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+            >
+              Videos
+            </a>
           </nav>
         </div>
       </header>
@@ -636,7 +621,8 @@ export default function HomePage() {
               🎯 Trading workspace
             </h2>
             <p className="mb-3 text-[11px] text-zinc-500">
-              Pick your pair and maintain your personal watchlist.
+              Pick your pair and maintain a shared watchlist. Saved on the
+              server so your friend sees the same list.
             </p>
 
             <div className="mb-2 flex flex-wrap gap-1.5">
@@ -815,9 +801,8 @@ export default function HomePage() {
               )}
             </div>
             <p className="text-[11px] text-zinc-500">
-              Screenshots are stored per pair until you remove them. The latest
-              analysis per pair is also saved, so you can switch pairs or
-              refresh without losing the playbook.
+              Screenshots and analyses are stored in the database per pair. Your
+              friend will see the same playbooks without re-running the AI.
             </p>
           </section>
 
@@ -836,7 +821,8 @@ export default function HomePage() {
               />
               <p className="text-[11px] text-zinc-500">
                 Select multiple images at once, for example H4, H1, M15 and M5.
-                They stay attached to this pair until you remove them.
+                They stay attached to this pair in the database until you remove
+                them.
               </p>
             </div>
 
@@ -851,7 +837,7 @@ export default function HomePage() {
               <div className="col-span-full mt-2 rounded-lg border border-zinc-800 bg-black/50 p-3 text-[11px] text-zinc-300">
                 <div className="mb-1 flex items-center justify-between">
                   <p className="font-semibold">
-                    Screenshots stored for {selectedPair} (
+                    Screenshots stored for {selectedPair || "—"} (
                     {chartImages.length})
                   </p>
                   <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
@@ -882,18 +868,20 @@ export default function HomePage() {
               <div>
                 <h2 className="text-sm font-semibold text-zinc-50">
                   3. Multi timeframe playbook for{" "}
-                  <span className="text-emerald-300">{selectedPair}</span>
+                  <span className="text-emerald-300">
+                    {selectedPair || "—"}
+                  </span>
                 </h2>
                 <p className="text-[11px] text-zinc-500">
                   Structured like a mini ebook: context, liquidity story, entry
-                  plan, risk, red flags, scenario for the next move, checklist
-                  and visual practice ideas.
+                  plan, risk, red flags, next-move scenarios, checklist and
+                  practice links.
                 </p>
               </div>
               {analysis && (
                 <div className="flex flex-col items-end gap-1 text-right">
                   <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-300">
-                    Saved analysis
+                    Saved in database
                   </span>
                   <span className="text-[11px] text-amber-300">
                     Quality: {analysis.qualityLabel || "N/A"}{" "}
@@ -962,8 +950,7 @@ export default function HomePage() {
                       7. Scenario for the next possible move
                     </h3>
                     <p className="mb-1 text-[11px] text-zinc-500">
-                      Educational if or then scenarios only. This is not
-                      financial advice.
+                      Educational if-then scenarios only. Not financial advice.
                     </p>
                     {renderParagraphs(analysis.nextMove)}
                     {analysis.qualityReason && (
@@ -1165,10 +1152,9 @@ export default function HomePage() {
                 <p className="text-xs text-zinc-500">
                   Once you store screenshots and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, you
-                  will get a structured playbook here: higher timeframe bias,
-                  liquidity story, entry plan, risk, red flags, scenario for the
-                  next move, checklist and practice links. Everything is saved
-                  per pair so you do not lose it on refresh.
+                  will get a structured playbook here and it will be saved in
+                  the database. Your friend can open the same pair and read it
+                  without re-running the AI.
                 </p>
               )}
             </div>
@@ -1181,7 +1167,7 @@ export default function HomePage() {
                 4. Setup radar and predictions across pairs
               </h2>
               <span className="text-[11px] text-zinc-400">
-                Sorted by quality score (A plus at the top)
+                Sorted by quality score (A+ setups at the top)
               </span>
             </div>
             {setupRadar.length ? (
@@ -1227,8 +1213,8 @@ export default function HomePage() {
             ) : (
               <p className="text-[11px] text-zinc-500">
                 Once you have analysed a few pairs, this section will list them
-                here and show which ones look closest to an A plus setup. This
-                is for study and planning only, not financial advice.
+                here and show which ones look closest to an A+ setup. This is
+                for study and planning only, not financial advice.
               </p>
             )}
           </section>
