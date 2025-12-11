@@ -247,6 +247,9 @@ export default function HomePage() {
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
 
   const [setupRadar, setSetupRadar] = useState<SetupSummary[]>([]);
+  const [historyEntries, setHistoryEntries] = useState<ChartAnalysisEntry[]>(
+    [],
+  );
 
   // Tick "now" so timers update
   useEffect(() => {
@@ -263,9 +266,8 @@ export default function HomePage() {
           throw new Error("Failed to load pairs");
         }
         const data: { pairs: string[] } = await res.json();
-        const fromServer = data.pairs && data.pairs.length
-          ? data.pairs
-          : defaultPairs;
+        const fromServer =
+          data.pairs && data.pairs.length ? data.pairs : defaultPairs;
         setPairs(fromServer);
         setPairsText(fromServer.join("\n"));
         if (!selectedPair && fromServer.length) {
@@ -326,7 +328,30 @@ export default function HomePage() {
     refreshSetupRadarFromServer();
   }, []);
 
-  // Load latest analysis for current pair from server
+  // Helper: load a specific history entry into the main view
+  const loadHistoryEntryIntoView = (entry: ChartAnalysisEntry) => {
+    setAnalysis(entry.analysis);
+    setNotes(entry.notes || "");
+    setSelectedTimeframes(
+      entry.timeframes && entry.timeframes.length
+        ? entry.timeframes
+        : ["H4", "H1", "M15"],
+    );
+    setCandleEnds(entry.candleEnds || {});
+    setChartImages(entry.chartImages || []);
+    if (entry.checklistState && entry.checklistState.length) {
+      setChecklist(entry.checklistState);
+    } else {
+      const fromAnalysis =
+        entry.analysis.checklist?.map((item) => ({
+          text: item.text,
+          done: !!item.satisfied,
+        })) || [];
+      setChecklist(fromAnalysis);
+    }
+  };
+
+  // Load latest analysis + history for current pair
   useEffect(() => {
     const loadPairAnalysis = async () => {
       if (!selectedPair) {
@@ -334,42 +359,53 @@ export default function HomePage() {
         setChecklist([]);
         setChartImages([]);
         setCandleEnds({});
+        setHistoryEntries([]);
         return;
       }
       try {
         const res = await fetch(
-          `/api/chart-analyses?pair=${encodeURIComponent(selectedPair)}`,
+          `/api/chart-analyses?pair=${encodeURIComponent(
+            selectedPair,
+          )}&history=1`,
         );
         if (!res.ok) {
           throw new Error("Failed to load analysis");
         }
-        const data: { entry: ChartAnalysisEntry | null } = await res.json();
-        if (!data.entry) {
+        const data:
+          | { entries: ChartAnalysisEntry[] }
+          | { entry: ChartAnalysisEntry | null } = await res.json();
+
+        if ("entries" in data && Array.isArray(data.entries)) {
+          const entries = data.entries;
+          setHistoryEntries(entries);
+          if (!entries.length) {
+            setAnalysis(null);
+            setChecklist([]);
+            setChartImages([]);
+            setCandleEnds({});
+            return;
+          }
+          // first one is the latest
+          loadHistoryEntryIntoView(entries[0]);
+        } else if ("entry" in data) {
+          const entry = (data as { entry: ChartAnalysisEntry | null })
+            .entry;
+          if (!entry) {
+            setAnalysis(null);
+            setChecklist([]);
+            setChartImages([]);
+            setCandleEnds({});
+            setHistoryEntries([]);
+            return;
+          }
+          setHistoryEntries([entry]);
+          loadHistoryEntryIntoView(entry);
+        } else {
           setAnalysis(null);
           setChecklist([]);
           setChartImages([]);
           setCandleEnds({});
-          return;
-        }
-        const entry = data.entry;
-        setAnalysis(entry.analysis);
-        setNotes(entry.notes || "");
-        setSelectedTimeframes(
-          entry.timeframes && entry.timeframes.length
-            ? entry.timeframes
-            : ["H4", "H1", "M15"],
-        );
-        setCandleEnds(entry.candleEnds || {});
-        setChartImages(entry.chartImages || []);
-        if (entry.checklistState && entry.checklistState.length) {
-          setChecklist(entry.checklistState);
-        } else {
-          const fromAnalysis =
-            entry.analysis.checklist?.map((item) => ({
-              text: item.text,
-              done: !!item.satisfied,
-            })) || [];
-          setChecklist(fromAnalysis);
+          setHistoryEntries([]);
         }
       } catch (e) {
         console.error("loadPairAnalysis error", e);
@@ -377,9 +413,11 @@ export default function HomePage() {
         setChecklist([]);
         setChartImages([]);
         setCandleEnds({});
+        setHistoryEntries([]);
       }
     };
     loadPairAnalysis();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
 
   const savePairsToServer = async (symbols: string[]) => {
@@ -401,12 +439,13 @@ export default function HomePage() {
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean);
     const unique = Array.from(new Set(list));
-    setPairs(unique.length ? unique : defaultPairs);
-    if (unique.length && !unique.includes(selectedPair)) {
-      setSelectedPair(unique[0]);
+    const finalList = unique.length ? unique : defaultPairs;
+    setPairs(finalList);
+    if (finalList.length && !finalList.includes(selectedPair)) {
+      setSelectedPair(finalList[0]);
     }
     // persist watchlist to DB
-    savePairsToServer(unique.length ? unique : defaultPairs);
+    savePairsToServer(finalList);
   };
 
   const toggleTimeframe = (tf: string) => {
@@ -467,8 +506,22 @@ export default function HomePage() {
           chartImages,
         }),
       });
-      // After saving, refresh radar
+      // After saving, refresh radar and history
       refreshSetupRadarFromServer();
+      // also reload history list for this pair (lightweight call)
+      const res = await fetch(
+        `/api/chart-analyses?pair=${encodeURIComponent(
+          selectedPair,
+        )}&history=1`,
+      );
+      if (res.ok) {
+        const data:
+          | { entries: ChartAnalysisEntry[] }
+          | { entry: ChartAnalysisEntry | null } = await res.json();
+        if ("entries" in data && Array.isArray(data.entries)) {
+          setHistoryEntries(data.entries);
+        }
+      }
     } catch (e) {
       console.error("saveCurrentStateToServer error", e);
     }
@@ -573,6 +626,16 @@ export default function HomePage() {
   const completedCount = checklist.filter((c) => c.done).length;
   const totalCount = checklist.length;
   const allDone = totalCount > 0 && completedCount === totalCount;
+
+  const formatDateTime = (iso: string) =>
+    new Date(iso).toLocaleString(undefined, {
+      hour12: false,
+      year: "2-digit",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
@@ -779,7 +842,7 @@ export default function HomePage() {
           </section>
         </aside>
 
-        {/* RIGHT COLUMN – Images, analysis, radar */}
+        {/* RIGHT COLUMN – Images, analysis, history, radar */}
         <main className="flex-1 space-y-4">
           {/* Step indicator */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
@@ -801,8 +864,9 @@ export default function HomePage() {
               )}
             </div>
             <p className="text-[11px] text-zinc-500">
-              Screenshots and analyses are stored in the database per pair. Your
-              friend will see the same playbooks without re-running the AI.
+              Screenshots and analyses are stored in the database per pair. You
+              can go back in time and load previous playbooks without spending
+              more credits.
             </p>
           </section>
 
@@ -862,7 +926,7 @@ export default function HomePage() {
             )}
           </section>
 
-          {/* Ebook-style analysis + checklist + screenshot guides + learning resources */}
+          {/* Ebook-style analysis */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <div>
@@ -1152,9 +1216,82 @@ export default function HomePage() {
                 <p className="text-xs text-zinc-500">
                   Once you store screenshots and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, you
-                  will get a structured playbook here and it will be saved in
-                  the database. Your friend can open the same pair and read it
-                  without re-running the AI.
+                  will get a structured playbook here. Every run is stored, so
+                  you can compare how the story changed over time.
+                </p>
+              )}
+            </div>
+          </section>
+
+          {/* NEW: History section */}
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-50">
+                4. Recent analyses for this pair
+              </h2>
+              <span className="text-[11px] text-zinc-400">
+                Latest {historyEntries.length || 0} snapshots
+              </span>
+            </div>
+            <div className="max-h-56 overflow-auto rounded-md border border-zinc-800 bg-black/40 p-2 text-[11px]">
+              {historyEntries.length ? (
+                <div className="space-y-1">
+                  {historyEntries.map((entry) => {
+                    const a = entry.analysis;
+                    const briefBias = (a.htfBias || "").slice(0, 120);
+                    const briefScenario = (a.nextMove || "").slice(0, 120);
+                    return (
+                      <div
+                        key={entry.id}
+                        className="flex flex-col gap-1 rounded-md border border-zinc-800 bg-zinc-950/80 px-2 py-2 md:flex-row md:items-start md:gap-3"
+                      >
+                        <div className="md:w-44">
+                          <p className="text-[11px] font-semibold text-zinc-100">
+                            {formatDateTime(entry.createdAt)}
+                          </p>
+                          <p className="text-[10px] text-zinc-500">
+                            TF:{" "}
+                            {entry.timeframes && entry.timeframes.length
+                              ? entry.timeframes.join(", ")
+                              : "n/a"}
+                          </p>
+                          <p className="mt-1 text-[10px] text-amber-300">
+                            {a.qualityLabel || "N/A"}{" "}
+                            {typeof a.qualityScore === "number"
+                              ? `(${a.qualityScore.toFixed(0)})`
+                              : ""}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => loadHistoryEntryIntoView(entry)}
+                            className="mt-1 rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-100 hover:bg-zinc-800"
+                          >
+                            Load this snapshot
+                          </button>
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <p className="text-[11px] text-zinc-300">
+                            <span className="font-semibold text-zinc-400">
+                              Bias:
+                            </span>{" "}
+                            {briefBias || "No bias summary."}
+                          </p>
+                          <p className="text-[11px] text-emerald-300">
+                            <span className="font-semibold text-emerald-400">
+                              Scenario:
+                            </span>{" "}
+                            {briefScenario || "No scenario summary."}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[11px] text-zinc-500">
+                  No history for this pair yet. Every time you analyze, a
+                  snapshot is saved here so you can later compare how the market
+                  evolved.
                 </p>
               )}
             </div>
@@ -1164,7 +1301,7 @@ export default function HomePage() {
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-zinc-50">
-                4. Setup radar and predictions across pairs
+                5. Setup radar and predictions across pairs
               </h2>
               <span className="text-[11px] text-zinc-400">
                 Sorted by quality score (A+ setups at the top)

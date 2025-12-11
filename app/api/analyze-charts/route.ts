@@ -86,15 +86,63 @@ function makeId() {
   return Math.random().toString(36).slice(2);
 }
 
-// GET /api/chart-analyses?pair=EURUSD -> latest for that pair
-// GET /api/chart-analyses -> latest per pair for radar
+// GET /api/chart-analyses?pair=EURUSD&history=1 -> last N analyses for that pair
+// GET /api/chart-analyses?pair=EURUSD           -> latest only
+// GET /api/chart-analyses                       -> latest per pair (for radar)
 export async function GET(request: Request) {
   try {
     await ensureChartTable();
     const { searchParams } = new URL(request.url);
     const pair = searchParams.get("pair");
+    const historyFlag = searchParams.get("history");
+    const wantHistory =
+      historyFlag === "1" ||
+      historyFlag === "true" ||
+      historyFlag === "yes";
+
+    if (pair && wantHistory) {
+      // full history for one pair (limited)
+      const { rows } = await sql`
+        SELECT
+          id,
+          pair,
+          timeframes,
+          notes,
+          analysis_json,
+          candle_ends_json,
+          checklist_state_json,
+          chart_images_json,
+          created_at
+        FROM chart_analyses
+        WHERE pair = ${pair}
+        ORDER BY created_at DESC
+        LIMIT 20;
+      `;
+
+      const entries: ChartAnalysisEntry[] = rows.map((row) => ({
+        id: row.id as string,
+        pair: row.pair as string,
+        timeframes: ((row.timeframes as any) ?? []) as string[],
+        notes: (row.notes as string) || "",
+        analysis: (row.analysis_json as any) as ChartAnalysis,
+        candleEnds: ((row.candle_ends_json as any) ?? {}) as Record<
+          string,
+          number
+        >,
+        checklistState:
+          ((row.checklist_state_json as any) ?? []) as ChecklistItemState[],
+        chartImages:
+          ((row.chart_images_json as any) ?? []) as ChartImage[],
+        createdAt:
+          (row.created_at as Date)?.toISOString?.() ??
+          String(row.created_at),
+      }));
+
+      return NextResponse.json({ entries });
+    }
 
     if (pair) {
+      // latest only for that pair
       const { rows } = await sql`
         SELECT
           id,
@@ -131,7 +179,8 @@ export async function GET(request: Request) {
           ((row.checklist_state_json as any) ?? []) as ChecklistItemState[],
         chartImages:
           ((row.chart_images_json as any) ?? []) as ChartImage[],
-        createdAt: (row.created_at as Date)?.toISOString?.() ??
+        createdAt:
+          (row.created_at as Date)?.toISOString?.() ??
           String(row.created_at),
       };
 
@@ -152,8 +201,7 @@ export async function GET(request: Request) {
       pair: row.pair as string,
       analysis: (row.analysis_json as any) as ChartAnalysis,
       createdAt:
-        (row.created_at as Date)?.toISOString?.() ??
-        String(row.created_at),
+        (row.created_at as Date)?.toISOString?.() ?? String(row.created_at),
     }));
 
     return NextResponse.json({ entries });
