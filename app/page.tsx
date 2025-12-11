@@ -1,6 +1,11 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
+import Image from "next/image";
 
 // ─────────────────────────────────────────────
 // Types
@@ -37,6 +42,8 @@ type ChartAnalysis = {
   checklist: ChecklistItem[];
   screenshotGuides: ScreenshotGuide[];
   learningQueries: LearningResourceQuery[];
+  // optional field you can use later to mark if prediction came true
+  tradeOutcome?: "hit" | "miss" | "pending";
 };
 
 type AnalyzeResponse = {
@@ -70,6 +77,23 @@ type SetupSummary = {
 };
 
 type PairPanelTab = "upload" | "analysis" | "predictions" | "history";
+
+type OverlayConfig = {
+  modelName: string;
+  tfNote: string;
+  longEntry: string;
+  longSL: string;
+  longTP1: string;
+  longTP2: string;
+  shortEntry: string;
+  shortSL: string;
+  shortTP1: string;
+  shortTP2: string;
+  demandLow: string;
+  demandHigh: string;
+  supplyLow: string;
+  supplyHigh: string;
+};
 
 const defaultPairs = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 const allTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
@@ -191,9 +215,9 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
-          In TradingView, copy a screenshot to clipboard, click this box,
-          then press Ctrl+V or Cmd+V. They will be attached to the
-          current pair on the server.
+          In TradingView, copy a screenshot to clipboard, click this box, then
+          press Ctrl+V or Cmd+V. The images will be attached to the current
+          pair on the server.
         </p>
       ) : (
         <div className="mt-1 grid max-h-28 grid-cols-3 gap-1 overflow-auto">
@@ -202,10 +226,12 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
               key={img.id}
               className="overflow-hidden rounded-md border border-zinc-800 bg-black"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <Image
                 src={img.previewUrl}
                 alt="pasted preview"
+                width={200}
+                height={120}
+                unoptimized
                 className="h-full w-full object-cover"
               />
             </div>
@@ -227,7 +253,11 @@ export default function HomePage() {
   const [newPairInput, setNewPairInput] = useState("");
   const [isAddingPair, setIsAddingPair] = useState(false);
 
-  // Left / right selection
+  // Bulk selection / deletion
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedForDelete, setSelectedForDelete] = useState<string[]>([]);
+
+  // Panel tab
   const [activeTab, setActiveTab] = useState<PairPanelTab>("upload");
 
   // Timeframes
@@ -253,6 +283,28 @@ export default function HomePage() {
   const [setupRadar, setSetupRadar] = useState<SetupSummary[]>([]);
   const [historyEntries, setHistoryEntries] = useState<ChartAnalysisEntry[]>(
     [],
+  );
+
+  // Overlay helper (Pine input)
+  const [overlayConfig, setOverlayConfig] = useState<OverlayConfig>({
+    modelName: "MySetup",
+    tfNote: "H4,M15",
+    longEntry: "",
+    longSL: "",
+    longTP1: "",
+    longTP2: "",
+    shortEntry: "",
+    shortSL: "",
+    shortTP1: "",
+    shortTP2: "",
+    demandLow: "",
+    demandHigh: "",
+    supplyLow: "",
+    supplyHigh: "",
+  });
+  const [pineConfigString, setPineConfigString] = useState("");
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
+    "idle",
   );
 
   // Tick the clock for candle timers
@@ -317,9 +369,33 @@ export default function HomePage() {
     updatePairs(next);
   };
 
-  const handleRemovePair = (symbol: string) => {
-    const next = pairs.filter((p) => p !== symbol);
+  const toggleSelectionMode = () => {
+    setSelectionMode((prev) => !prev);
+    setSelectedForDelete([]);
+  };
+
+  const togglePairSelectionForDelete = (symbol: string) => {
+    setSelectedForDelete((prev) =>
+      prev.includes(symbol)
+        ? prev.filter((p) => p !== symbol)
+        : [...prev, symbol],
+    );
+  };
+
+  const selectAllPairsForDelete = () => {
+    if (selectedForDelete.length === pairs.length) {
+      setSelectedForDelete([]);
+    } else {
+      setSelectedForDelete([...pairs]);
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (!selectedForDelete.length) return;
+    const next = pairs.filter((p) => !selectedForDelete.includes(p));
     updatePairs(next);
+    setSelectedForDelete([]);
+    setSelectionMode(false);
   };
 
   // Radar (cross-pair priority)
@@ -353,7 +429,6 @@ export default function HomePage() {
         };
       });
 
-      // Sort by quality score (higher first)
       list.sort((a, b) => b.qualityScore - a.qualityScore);
       setSetupRadar(list);
     } catch (e) {
@@ -365,10 +440,6 @@ export default function HomePage() {
   useEffect(() => {
     refreshSetupRadarFromServer();
   }, []);
-
-  // Helper: map radar by pair
-  const radarByPair = new Map<string, SetupSummary>();
-  setupRadar.forEach((s) => radarByPair.set(s.pair, s));
 
   // Load history & latest analysis for selected pair
   const loadHistoryEntryIntoView = (entry: ChartAnalysisEntry) => {
@@ -457,6 +528,20 @@ export default function HomePage() {
     loadPairAnalysis();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
+
+  // Reset overlay config when pair or timeframes change
+  useEffect(() => {
+    setOverlayConfig((prev) => ({
+      ...prev,
+      modelName:
+        analysis?.qualityLabel && analysis.qualityLabel.length
+          ? `${analysis.qualityLabel} setup`
+          : prev.modelName || "MySetup",
+      tfNote: selectedTimeframes.join(","),
+    }));
+    setPineConfigString("");
+    setCopyStatus("idle");
+  }, [selectedPair, selectedTimeframes, analysis]);
 
   // Timeframes
   const toggleTimeframe = (tf: string) => {
@@ -648,7 +733,6 @@ export default function HomePage() {
   const analyzedPairs = setupRadar.map((s) => s.pair);
   const normalPairs = pairs.filter((p) => !analyzedPairs.includes(p));
 
-  // Order analyzed by quality (already sorted by score, but group A+ > A > B > rest)
   const qualityRank = (label: string) => {
     const l = label.toUpperCase();
     if (l.includes("A+")) return 3;
@@ -663,6 +747,86 @@ export default function HomePage() {
     if (ra !== rb) return rb - ra;
     return b.qualityScore - a.qualityScore;
   });
+
+  // Pine input generator
+  const handleOverlayChange = (
+    field: keyof OverlayConfig,
+    value: string,
+  ) => {
+    setOverlayConfig((prev) => ({ ...prev, [field]: value }));
+    setPineConfigString("");
+    setCopyStatus("idle");
+  };
+
+  const generatePineInputString = () => {
+    if (!selectedPair) return;
+
+    const modelName =
+      overlayConfig.modelName.trim() || "MySetup";
+    const tfNote =
+      overlayConfig.tfNote.trim() || selectedTimeframes.join(",");
+    const biasLine =
+      (analysis?.htfBias || "").split(/\n/)[0].slice(0, 120) ||
+      (analysis?.overview || "").split(/\n/)[0].slice(0, 120) ||
+      "";
+
+    const numOrZero = (v: string) =>
+      v.trim().length ? v.trim() : "0";
+
+    const cfg =
+      `MODEL=${modelName};` +
+      `PAIR=${selectedPair};` +
+      `TF=${tfNote};` +
+      `BIAS=${biasLine};` +
+      `LE=${numOrZero(overlayConfig.longEntry)};` +
+      `LS=${numOrZero(overlayConfig.longSL)};` +
+      `LT1=${numOrZero(overlayConfig.longTP1)};` +
+      `LT2=${numOrZero(overlayConfig.longTP2)};` +
+      `SE=${numOrZero(overlayConfig.shortEntry)};` +
+      `SS=${numOrZero(overlayConfig.shortSL)};` +
+      `ST1=${numOrZero(overlayConfig.shortTP1)};` +
+      `ST2=${numOrZero(overlayConfig.shortTP2)};` +
+      `DL=${numOrZero(overlayConfig.demandLow)};` +
+      `DH=${numOrZero(overlayConfig.demandHigh)};` +
+      `SL=${numOrZero(overlayConfig.supplyLow)};` +
+      `SH=${numOrZero(overlayConfig.supplyHigh)};`;
+
+    setPineConfigString(cfg);
+    setCopyStatus("idle");
+  };
+
+  const handleCopyPineConfig = async () => {
+    if (!pineConfigString) return;
+    try {
+      if (navigator && navigator.clipboard) {
+        await navigator.clipboard.writeText(pineConfigString);
+        setCopyStatus("copied");
+      } else {
+        setCopyStatus("error");
+      }
+    } catch {
+      setCopyStatus("error");
+    }
+  };
+
+  // Weekly stats for cards
+  const nowMs = Date.now();
+  const weekAgo = nowMs - 7 * 24 * 60 * 60 * 1000;
+  const weeklyEntries = historyEntries.filter(
+    (e) => Date.parse(e.createdAt) >= weekAgo,
+  );
+  const weeklyTotal = weeklyEntries.length;
+  const weeklyHits = weeklyEntries.filter(
+    (e) => e.analysis.tradeOutcome === "hit",
+  ).length;
+  const weeklyMiss = weeklyEntries.filter(
+    (e) => e.analysis.tradeOutcome === "miss",
+  ).length;
+  const weeklyPending = weeklyTotal - weeklyHits - weeklyMiss;
+  const weeklyHitRate =
+    weeklyTotal > 0 ? Math.round((weeklyHits / weeklyTotal) * 100) : 0;
+
+  const bestSetup = sortedAnalyzed[0] ?? null;
 
   // ─────────────────────────────────────────────
   // JSX
@@ -707,11 +871,11 @@ export default function HomePage() {
       </header>
 
       <div className="mx-auto flex max-w-6xl gap-4 px-4 py-6">
-        {/* Sidebar watchlist */}
+        {/* Sidebar */}
         <aside className="w-72 flex-shrink-0 space-y-4">
-          {/* Trading workspace / watchlist */}
           <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 px-3 py-3 text-xs shadow-lg">
-            <div className="mb-2 flex items-center justify-between">
+            {/* Sidebar header */}
+            <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900 text-lg">
                   ⇄
@@ -721,18 +885,68 @@ export default function HomePage() {
                     Trading workspace
                   </h2>
                   <p className="text-[11px] text-zinc-500">
-                    Pairs grouped by analyzed quality, similar to a
-                    watchlist.
+                    Watchlist grouped by analyzed quality.
                   </p>
                 </div>
               </div>
-              <div className="rounded-full bg-zinc-900 px-2 py-1 text-[10px] text-zinc-400">
-                Shared
+              <div className="flex items-center gap-1 text-[11px]">
+                {/* Selection mode */}
+                <button
+                  type="button"
+                  onClick={toggleSelectionMode}
+                  title="Toggle selection mode"
+                  className={`flex h-7 w-7 items-center justify-center rounded-full border text-[13px] ${
+                    selectionMode
+                      ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
+                      : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500"
+                  }`}
+                >
+                  {selectionMode ? "☑" : "☐"}
+                </button>
+
+                {/* Select all */}
+                {selectionMode && (
+                  <button
+                    type="button"
+                    onClick={selectAllPairsForDelete}
+                    title="Select all pairs"
+                    className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[12px] text-zinc-400 hover:border-zinc-500"
+                  >
+                    ☆
+                  </button>
+                )}
+
+                {/* Delete */}
+                {selectionMode && (
+                  <button
+                    type="button"
+                    onClick={handleBulkDelete}
+                    disabled={!selectedForDelete.length}
+                    title="Delete selected"
+                    className={`flex h-7 w-7 items-center justify-center rounded-full border text-[13px] ${
+                      selectedForDelete.length
+                        ? "border-red-500 bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-600"
+                    }`}
+                  >
+                    🗑
+                  </button>
+                )}
+
+                {/* Add */}
+                <button
+                  type="button"
+                  onClick={() => setIsAddingPair(true)}
+                  title="Add pair"
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[16px] text-emerald-300 hover:border-emerald-400 hover:text-emerald-200"
+                >
+                  +
+                </button>
               </div>
             </div>
 
             {/* Analyzed section */}
-            <div className="mb-2 mt-1">
+            <div className="mb-2">
               <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
                 <span>Analyzed setups</span>
                 <span>{sortedAnalyzed.length}</span>
@@ -741,106 +955,123 @@ export default function HomePage() {
                 <div className="space-y-1.5">
                   {sortedAnalyzed.map((s) => {
                     const isSelected = s.pair === selectedPair;
+                    const isMarkedForDelete =
+                      selectedForDelete.includes(s.pair);
                     return (
                       <div
                         key={s.pair}
-                        className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-2 py-1"
+                        className={`rounded-2xl border px-2 py-1.5 text-[11px] transition-all duration-200 ${
+                          isSelected
+                            ? "border-emerald-500/70 bg-zinc-950"
+                            : "border-zinc-800 bg-zinc-950/80 hover:border-zinc-700"
+                        }`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedPair(s.pair);
-                            setActiveTab("analysis");
-                          }}
-                          className="flex w-full items-center justify-between text-left"
-                        >
+                        <div className="flex items-center justify-between gap-1">
                           <div className="flex items-center gap-2">
-                            <span
-                              className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
-                                isSelected
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-100"
-                              }`}
+                            {selectionMode && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  togglePairSelectionForDelete(s.pair);
+                                }}
+                                className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] ${
+                                  isMarkedForDelete
+                                    ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
+                                    : "border-zinc-600 bg-zinc-950 text-zinc-500"
+                                }`}
+                              >
+                                {isMarkedForDelete ? "✓" : ""}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!selectionMode) {
+                                  setSelectedPair(s.pair);
+                                  setActiveTab("analysis");
+                                }
+                              }}
+                              className="flex items-center gap-2"
                             >
-                              {s.pair}
-                            </span>
-                            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                              {s.qualityLabel}{" "}
-                              {s.qualityScore
-                                ? `(${s.qualityScore.toFixed(0)})`
-                                : ""}
-                            </span>
+                              <span
+                                className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
+                                  isSelected
+                                    ? "bg-emerald-500 text-black"
+                                    : "bg-zinc-900 text-zinc-100"
+                                }`}
+                              >
+                                {s.pair}
+                              </span>
+                              <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                                {s.qualityLabel}{" "}
+                                {s.qualityScore
+                                  ? `(${s.qualityScore.toFixed(0)})`
+                                  : ""}
+                              </span>
+                            </button>
                           </div>
-                          <span className="text-[12px] text-zinc-500">
-                            {isSelected ? "▾" : "▸"}
-                          </span>
-                        </button>
-                        {isSelected && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            <button
-                              type="button"
-                              onClick={() => setActiveTab("upload")}
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${
-                                activeTab === "upload"
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-200"
-                              }`}
-                            >
-                              Upload
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setActiveTab("analysis")}
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${
-                                activeTab === "analysis"
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-200"
-                              }`}
-                            >
-                              Analysis
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setActiveTab("predictions")
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!selectionMode) {
+                                setSelectedPair(s.pair);
+                                setActiveTab(
+                                  isSelected ? activeTab : "analysis",
+                                );
                               }
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${
-                                activeTab === "predictions"
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-200"
-                              }`}
-                            >
-                              Predictions
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setActiveTab("history")}
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${
-                                activeTab === "history"
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-200"
-                              }`}
-                            >
-                              History
-                            </button>
+                            }}
+                            className={`text-[13px] text-zinc-500 transition-transform ${
+                              isSelected ? "rotate-90" : ""
+                            }`}
+                          >
+                            ▸
+                          </button>
+                        </div>
+
+                        {/* Collapsible btns */}
+                        <div
+                          className={`mt-1 grid overflow-hidden transition-all duration-200 ${
+                            isSelected
+                              ? "max-h-16 opacity-100"
+                              : "max-h-0 opacity-0"
+                          }`}
+                        >
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            {(["upload",
+                              "analysis",
+                              "predictions",
+                              "history"] as PairPanelTab[]).map((tab) => (
+                              <button
+                                key={tab}
+                                type="button"
+                                onClick={() => setActiveTab(tab)}
+                                className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                                  activeTab === tab
+                                    ? "bg-emerald-500 text-black"
+                                    : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+                                }`}
+                              >
+                                {tab[0].toUpperCase() + tab.slice(1)}
+                              </button>
+                            ))}
                           </div>
-                        )}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               ) : (
                 <p className="rounded-lg bg-zinc-950/80 px-2 py-2 text-[11px] text-zinc-500">
-                  Once you run analysis for a pair, it appears here with
-                  quality grade (A+, A, B).
+                  Once you run analysis for a pair, it appears here with quality
+                  grade (A+, A, B).
                 </p>
               )}
             </div>
 
-            {/* Divider */}
             <div className="my-2 border-t border-zinc-800" />
 
-            {/* Normal watchlist */}
+            {/* Watchlist */}
             <div>
               <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
                 <span>Watchlist pairs</span>
@@ -849,92 +1080,111 @@ export default function HomePage() {
               <div className="space-y-1.5">
                 {normalPairs.map((p) => {
                   const isSelected = p === selectedPair;
+                  const isMarkedForDelete = selectedForDelete.includes(p);
                   return (
                     <div
                       key={p}
-                      className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-2 py-1"
+                      className={`rounded-2xl border px-2 py-1.5 text-[11px] transition-all duration-200 ${
+                        isSelected
+                          ? "border-emerald-500/70 bg-zinc-950"
+                          : "border-zinc-800 bg-zinc-950/80 hover:border-zinc-700"
+                      }`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedPair(p);
-                          setActiveTab("upload");
-                        }}
-                        className="flex w-full items-center justify-between text-left"
-                      >
+                      <div className="flex items-center justify-between gap-1">
                         <div className="flex items-center gap-2">
-                          <span
-                            className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
-                              isSelected
-                                ? "bg-emerald-500 text-black"
-                                : "bg-zinc-900 text-zinc-100"
-                            }`}
-                          >
-                            {p}
-                          </span>
-                        </div>
-                        <span className="text-[12px] text-zinc-500">
-                          {isSelected ? "▾" : "▸"}
-                        </span>
-                      </button>
-                      {isSelected && (
-                        <div className="mt-1 flex flex-wrap gap-1">
+                          {selectionMode && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                togglePairSelectionForDelete(p);
+                              }}
+                              className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] ${
+                                isMarkedForDelete
+                                  ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
+                                  : "border-zinc-600 bg-zinc-950 text-zinc-500"
+                              }`}
+                            >
+                              {isMarkedForDelete ? "✓" : ""}
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => setActiveTab("upload")}
-                            className={`rounded-full px-2 py-0.5 text-[11px] ${
-                              activeTab === "upload"
-                                ? "bg-emerald-500 text-black"
-                                : "bg-zinc-900 text-zinc-200"
-                            }`}
+                            onClick={() => {
+                              if (!selectionMode) {
+                                setSelectedPair(p);
+                                setActiveTab("upload");
+                              }
+                            }}
+                            className="flex items-center gap-2"
                           >
-                            Upload
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("analysis")}
-                            className={`rounded-full px-2 py-0.5 text-[11px] ${
-                              activeTab === "analysis"
-                                ? "bg-emerald-500 text-black"
-                                : "bg-zinc-900 text-zinc-200"
-                            }`}
-                          >
-                            Analysis
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("predictions")}
-                            className={`rounded-full px-2 py-0.5 text-[11px] ${
-                              activeTab === "predictions"
-                                ? "bg-emerald-500 text-black"
-                                : "bg-zinc-900 text-zinc-200"
-                            }`}
-                          >
-                            Predictions
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActiveTab("history")}
-                            className={`rounded-full px-2 py-0.5 text-[11px] ${
-                              activeTab === "history"
-                                ? "bg-emerald-500 text-black"
-                                : "bg-zinc-900 text-zinc-200"
-                            }`}
-                          >
-                            History
+                            <span
+                              className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
+                                isSelected
+                                  ? "bg-emerald-500 text-black"
+                                  : "bg-zinc-900 text-zinc-100"
+                              }`}
+                            >
+                              {p}
+                            </span>
                           </button>
                         </div>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!selectionMode) {
+                              setSelectedPair(p);
+                              setActiveTab(
+                                isSelected ? activeTab : "upload",
+                              );
+                            }
+                          }}
+                          className={`text-[13px] text-zinc-500 transition-transform ${
+                            isSelected ? "rotate-90" : ""
+                          }`}
+                        >
+                          ▸
+                        </button>
+                      </div>
+
+                      {/* Collapsible buttons */}
+                      <div
+                        className={`mt-1 grid overflow-hidden transition-all duration-200 ${
+                          isSelected
+                            ? "max-h-16 opacity-100"
+                            : "max-h-0 opacity-0"
+                        }`}
+                      >
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {(["upload",
+                            "analysis",
+                            "predictions",
+                            "history"] as PairPanelTab[]).map((tab) => (
+                            <button
+                              key={tab}
+                              type="button"
+                              onClick={() => setActiveTab(tab)}
+                              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                                activeTab === tab
+                                  ? "bg-emerald-500 text-black"
+                                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+                              }`}
+                            >
+                              {tab[0].toUpperCase() + tab.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
 
-                {/* Add pair pill */}
-                {isAddingPair ? (
-                  <div className="inline-flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/80 px-2 py-1">
+                {/* Add pair row */}
+                {isAddingPair && (
+                  <div className="inline-flex w-full items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-950/80 px-2 py-1.5">
                     <input
                       autoFocus
-                      className="w-24 bg-transparent text-[12px] uppercase text-zinc-100 outline-none"
+                      className="w-28 bg-transparent text-[12px] uppercase text-zinc-100 outline-none"
                       value={newPairInput}
                       onChange={(e) =>
                         setNewPairInput(e.target.value.toUpperCase())
@@ -951,26 +1201,18 @@ export default function HomePage() {
                     <button
                       type="button"
                       onClick={handleAddPair}
-                      className="text-[11px] text-emerald-400"
+                      className="text-[11px] text-emerald-400 hover:text-emerald-300"
                       title="Add pair"
                     >
                       Save
                     </button>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setIsAddingPair(true)}
-                    className="inline-flex w-full items-center justify-between rounded-xl border border-dashed border-zinc-700 bg-zinc-950/40 px-2 py-1 text-[12px] text-zinc-300 hover:border-emerald-500 hover:text-emerald-300"
-                  >
-                    <span>+ Add pair</span>
-                    <span className="text-[14px]">+</span>
-                  </button>
                 )}
 
                 {!pairs.length && !isAddingPair && (
                   <p className="text-[11px] text-zinc-500">
-                    No pairs yet. Add a symbol like EURUSD, XAUUSD, or NAS100.
+                    No pairs yet. Use the plus icon above to add your first
+                    symbol.
                   </p>
                 )}
               </div>
@@ -978,9 +1220,137 @@ export default function HomePage() {
           </section>
         </aside>
 
-        {/* Main panel */}
+        {/* Main */}
         <main className="flex-1 space-y-4">
-          {/* Small breadcrumb / header */}
+          {/* Dashboard cards row */}
+          <div className="grid gap-3 md:grid-cols-3">
+            {/* Card 1: Weekly report */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
+              <div className="mb-1 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">
+                    Weekly prediction report
+                  </p>
+                  <p className="text-[11px] text-zinc-500">
+                    Last 7 days for this pair.
+                  </p>
+                </div>
+                <div className="rounded-full bg-zinc-900 px-3 py-1 text-[11px] text-zinc-300">
+                  {selectedPair || "No pair"}
+                </div>
+              </div>
+              <div className="mt-2 flex items-end justify-between">
+                <div className="space-y-1">
+                  <p className="text-2xl font-semibold text-zinc-50">
+                    {weeklyTotal}
+                    <span className="ml-1 text-xs text-zinc-400">
+                      signals
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-emerald-300">
+                    Hits: <span className="font-semibold">{weeklyHits}</span>
+                  </p>
+                  <p className="text-[11px] text-red-300">
+                    Misses:{" "}
+                    <span className="font-semibold">{weeklyMiss}</span>
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    Pending:{" "}
+                    <span className="font-semibold">{weeklyPending}</span>
+                  </p>
+                </div>
+                <div className="text-right text-[11px]">
+                  <p className="text-zinc-400">Hit rate</p>
+                  <p className="text-2xl font-semibold text-emerald-400">
+                    {weeklyTotal ? `${weeklyHitRate}%` : "—"}
+                  </p>
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    Once you mark outcomes, this gives a real weekly report.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Best setup */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
+              <div className="mb-1 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">
+                    Best current setup
+                  </p>
+                  <p className="text-[11px] text-zinc-500">
+                    Highest quality setup across all analyzed pairs.
+                  </p>
+                </div>
+                <div className="rounded-full bg-amber-500/20 px-3 py-1 text-[11px] font-semibold text-amber-300">
+                  ☆ A+ radar
+                </div>
+              </div>
+              <div className="mt-2 flex items-end justify-between">
+                {bestSetup ? (
+                  <>
+                    <div>
+                      <p className="text-sm font-semibold text-zinc-50">
+                        {bestSetup.pair}
+                      </p>
+                      <p className="mt-1 text-[11px] text-amber-300">
+                        {bestSetup.qualityLabel}{" "}
+                        {bestSetup.qualityScore
+                          ? `(${bestSetup.qualityScore.toFixed(0)})`
+                          : ""}
+                      </p>
+                    </div>
+                    <div className="max-w-[190px] text-right text-[11px]">
+                      <p className="line-clamp-2 text-zinc-300">
+                        {bestSetup.nextMoveSnippet ||
+                          "No scenario summary yet."}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-zinc-500">
+                    Run analysis on a few pairs and your best A+ style setup
+                    will show up here.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Card 3: Activity */}
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
+              <div className="mb-1 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">
+                    Analysis activity
+                  </p>
+                  <p className="text-[11px] text-zinc-500">
+                    How much work you have done across the workspace.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 flex items-end justify-between">
+                <div>
+                  <p className="text-2xl font-semibold text-zinc-50">
+                    {setupRadar.length}
+                    <span className="ml-1 text-xs text-zinc-400">
+                      pairs
+                    </span>
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-400">
+                    With at least one saved playbook.
+                  </p>
+                </div>
+                <div className="text-right text-[11px] text-zinc-400">
+                  <p>Total snapshots for this pair:</p>
+                  <p className="text-lg font-semibold text-zinc-100">
+                    {historyEntries.length}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Small header line */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-3 text-xs shadow-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-[11px] text-zinc-400">
@@ -1002,8 +1372,8 @@ export default function HomePage() {
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-zinc-500">
-                <span>Right side updates based on Upload / Analysis / Predictions / History.</span>
+              <div className="text-[10px] text-zinc-500">
+                Left side: pick pair and mode. Right side: details.
               </div>
             </div>
           </section>
@@ -1019,14 +1389,14 @@ export default function HomePage() {
                       Timeframes and chart screenshots
                     </h2>
                     <p className="text-[11px] text-zinc-500">
-                      Select the structure you are studying, then upload or
-                      paste actual TradingView charts. Screenshots stay
-                      attached to this pair until you remove them.
+                      Select the structure you are studying, then upload or paste
+                      actual TradingView charts. Screenshots stay attached to
+                      this pair until you remove them.
                     </p>
                   </div>
                 </div>
 
-                {/* Timeframe chips */}
+                {/* Timeframes */}
                 <div className="mt-3">
                   <p className="mb-1 text-[11px] font-semibold text-zinc-400">
                     Timeframe stack
@@ -1096,8 +1466,8 @@ export default function HomePage() {
                       className="text-xs"
                     />
                     <p className="text-[11px] text-zinc-500">
-                      Select multiple images at once (H4, H1, M15, M5). They
-                      stay attached to this pair until you clear them.
+                      Select multiple images at once (H4, H1, M15, M5). They stay
+                      attached to this pair until you clear them.
                     </p>
                   </div>
                   <div className="space-y-2">
@@ -1130,10 +1500,12 @@ export default function HomePage() {
                           key={img.id}
                           className="overflow-hidden rounded-md border border-zinc-800 bg-black"
                         >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
+                          <Image
                             src={img.dataUrl}
                             alt={img.name}
+                            width={200}
+                            height={120}
+                            unoptimized
                             className="h-full w-full object-cover"
                           />
                         </div>
@@ -1160,7 +1532,7 @@ export default function HomePage() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder={
-                    "Example:\n- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high probability entry with SL/TP idea?"
+                    "Example:\n- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high-probability entry with SL / TP idea?"
                   }
                 />
                 <div className="flex items-center justify-between gap-2">
@@ -1236,7 +1608,7 @@ export default function HomePage() {
                     </div>
                     <div>
                       <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
-                        3. Liquidity story – where participants are trapped
+                        3. Liquidity story – where traders are trapped
                       </h3>
                       {renderParagraphs(analysis.liquidityStory)}
                     </div>
@@ -1329,9 +1701,9 @@ export default function HomePage() {
                       )}
                       {allDone && (
                         <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
-                          All checklist items are marked as satisfied. This
-                          does not guarantee a winning trade, but it means the
-                          setup matches the model you described.
+                          All checklist items are marked as satisfied. This does
+                          not guarantee a winning trade, but it means the setup
+                          matches the model you described.
                         </p>
                       )}
                     </div>
@@ -1383,8 +1755,8 @@ export default function HomePage() {
                         Practice resources for this idea
                       </h3>
                       <p className="mb-2 text-[11px] text-zinc-500">
-                        These buttons open search pages so you can find
-                        example videos and images on other platforms.
+                        These buttons open search pages so you can find example
+                        videos and images on other platforms.
                       </p>
                       {analysis.learningQueries &&
                       analysis.learningQueries.length ? (
@@ -1462,9 +1834,7 @@ export default function HomePage() {
                 ) : (
                   <p className="text-xs text-zinc-500">
                     Once you store screenshots and run the analyzer, a
-                    structured playbook will appear here for the selected
-                    pair. Every run is stored so you can compare how the
-                    story changed over time.
+                    structured playbook will appear here for the selected pair.
                   </p>
                 )}
               </div>
@@ -1484,14 +1854,14 @@ export default function HomePage() {
                       </span>
                     </h2>
                     <p className="text-[11px] text-zinc-500">
-                      Scenario summary based on your last analysis. For
-                      study and planning only, not financial advice.
+                      Scenario summary based on your last analysis. For study
+                      and planning only, not financial advice.
                     </p>
                   </div>
                   {analysis && (
                     <div className="text-right text-[11px]">
                       <p className="rounded-full bg-amber-500/20 px-3 py-1 text-amber-300">
-                        {analysis.qualityLabel || "N/A"} setup{" "}
+                        {analysis.qualityLabel || "N/A"}{" "}
                         {typeof analysis.qualityScore === "number"
                           ? `(${analysis.qualityScore.toFixed(0)}/100)`
                           : ""}
@@ -1510,9 +1880,9 @@ export default function HomePage() {
                     <>
                       {renderParagraphs(analysis.nextMove)}
                       <p className="mt-3 text-[11px] text-zinc-500">
-                        Reminder: this is a description of a possible
-                        pattern based on your screenshots and rules. Always
-                        follow your own plan and manage risk.
+                        This is a description of a possible pattern based on
+                        your screenshots and rules. Always follow your own plan
+                        and manage risk.
                       </p>
                     </>
                   ) : (
@@ -1520,6 +1890,329 @@ export default function HomePage() {
                       Run an analysis first to see a structured prediction
                       narrative for this pair.
                     </p>
+                  )}
+                </div>
+
+                {/* Overlay helper + Pine generator */}
+                <div className="mt-4 rounded-lg border border-zinc-800 bg-black/60 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[13px] font-semibold text-zinc-100">
+                        TradingView overlay helper
+                      </h3>
+                      <p className="text-[11px] text-zinc-500">
+                        Fill in the key prices from the analysis, then generate
+                        a single config line for your Pine indicator input.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Model + TF */}
+                  <div className="mb-2 grid gap-2 md:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-[11px] text-zinc-400">
+                        Model name
+                      </p>
+                      <input
+                        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                        value={overlayConfig.modelName}
+                        onChange={(e) =>
+                          handleOverlayChange("modelName", e.target.value)
+                        }
+                        placeholder="London liquidity sweep"
+                      />
+                    </div>
+                    <div>
+                      <p className="mb-1 text-[11px] text-zinc-400">
+                        Timeframes note (for Pine TF field)
+                      </p>
+                      <input
+                        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                        value={overlayConfig.tfNote}
+                        onChange={(e) =>
+                          handleOverlayChange("tfNote", e.target.value)
+                        }
+                        placeholder="H4,M15"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Price inputs */}
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-semibold text-emerald-300">
+                        Long setup
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Entry (LE)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.longEntry}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "longEntry",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0830"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Stop (LS)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.longSL}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "longSL",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0810"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            TP1 (LT1)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.longTP1}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "longTP1",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0875"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            TP2 (LT2)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.longTP2}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "longTP2",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0920"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-semibold text-red-300">
+                        Short setup
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Entry (SE)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.shortEntry}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "shortEntry",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0830"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Stop (SS)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.shortSL}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "shortSL",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0850"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            TP1 (ST1)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.shortTP1}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "shortTP1",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0780"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            TP2 (ST2)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.shortTP2}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "shortTP2",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0730"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Zones */}
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-[11px] font-semibold text-emerald-300">
+                        Demand / buy zone
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Low (DL)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.demandLow}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "demandLow",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0815"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            High (DH)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.demandHigh}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "demandHigh",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0825"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-[11px] font-semibold text-red-300">
+                        Supply / sell zone
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            Low (SL)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.supplyLow}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "supplyLow",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0860"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-[11px] text-zinc-400">
+                            High (SH)
+                          </p>
+                          <input
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-100 outline-none focus:border-emerald-500"
+                            value={overlayConfig.supplyHigh}
+                            onChange={(e) =>
+                              handleOverlayChange(
+                                "supplyHigh",
+                                e.target.value,
+                              )
+                            }
+                            placeholder="1.0875"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Buttons + output */}
+                  <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={generatePineInputString}
+                        className="rounded-full bg-emerald-500 px-4 py-1.5 text-xs font-semibold text-black hover:bg-emerald-400"
+                      >
+                        Generate Pine input string
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCopyPineConfig}
+                        disabled={!pineConfigString}
+                        className="rounded-full bg-zinc-900 px-4 py-1.5 text-xs font-semibold text-zinc-100 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-800/60 disabled:text-zinc-500"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-zinc-500">
+                      Paste this line into your Pine indicator&apos;s Config
+                      input.
+                    </div>
+                  </div>
+
+                  {pineConfigString && (
+                    <div className="mt-2 rounded-md border border-zinc-800 bg-black/70 p-2">
+                      <p className="mb-1 text-[10px] font-semibold text-zinc-400">
+                        Pine input string
+                      </p>
+                      <textarea
+                        className="h-16 w-full resize-none rounded-md bg-transparent text-[11px] text-emerald-200 outline-none"
+                        value={pineConfigString}
+                        readOnly
+                      />
+                      {copyStatus === "copied" && (
+                        <p className="mt-1 text-[10px] text-emerald-400">
+                          Copied to clipboard.
+                        </p>
+                      )}
+                      {copyStatus === "error" && (
+                        <p className="mt-1 text-[10px] text-red-400">
+                          Could not copy – you can still manually use Ctrl+C or
+                          Cmd+C on the text above.
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
               </section>
@@ -1530,9 +2223,6 @@ export default function HomePage() {
                   <h2 className="text-sm font-semibold text-zinc-50">
                     Setup radar across all pairs
                   </h2>
-                  <span className="text-[11px] text-zinc-400">
-                    Sorted by quality score (A+ first)
-                  </span>
                 </div>
                 {setupRadar.length ? (
                   <div className="space-y-1 text-[11px]">
@@ -1579,9 +2269,8 @@ export default function HomePage() {
                   </div>
                 ) : (
                   <p className="text-[11px] text-zinc-500">
-                    Once you have analysed a few pairs, this radar shows
-                    which ones are closest to an A+ setup based on your
-                    rules.
+                    Once you have analysed a few pairs, this radar shows which
+                    ones are closest to an A+ setup based on your rules.
                   </p>
                 )}
               </section>
