@@ -1,11 +1,36 @@
 "use client";
 
-import React, {
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
+
+// Material UI
+import Box from "@mui/material/Box";
+import Paper from "@mui/material/Paper";
+import List from "@mui/material/List";
+import ListItem from "@mui/material/ListItem";
+import ListItemButton from "@mui/material/ListItemButton";
+import ListItemText from "@mui/material/ListItemText";
+import ListSubheader from "@mui/material/ListSubheader";
+import IconButton from "@mui/material/IconButton";
+import Collapse from "@mui/material/Collapse";
+import Chip from "@mui/material/Chip";
+import Divider from "@mui/material/Divider";
+import Tooltip from "@mui/material/Tooltip";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
+
+import DashboardIcon from "@mui/icons-material/Dashboard";
+import UploadIcon from "@mui/icons-material/UploadRounded";
+import AssessmentIcon from "@mui/icons-material/Assessment";
+import TimelineIcon from "@mui/icons-material/Timeline";
+import HistoryIcon from "@mui/icons-material/History";
+import DeleteIcon from "@mui/icons-material/Delete";
+import AddIcon from "@mui/icons-material/Add";
+import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
+import CheckBoxIcon from "@mui/icons-material/CheckBox";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import SelectAllIcon from "@mui/icons-material/SelectAll";
 
 // ─────────────────────────────────────────────
 // Types
@@ -42,7 +67,6 @@ type ChartAnalysis = {
   checklist: ChecklistItem[];
   screenshotGuides: ScreenshotGuide[];
   learningQueries: LearningResourceQuery[];
-  // optional field you can use later to mark if prediction came true
   tradeOutcome?: "hit" | "miss" | "pending";
 };
 
@@ -76,7 +100,7 @@ type SetupSummary = {
   updatedAt: number;
 };
 
-type PairPanelTab = "upload" | "analysis" | "predictions" | "history";
+type ViewMode = "dashboard" | "upload" | "analysis" | "predictions" | "history";
 
 type OverlayConfig = {
   modelName: string;
@@ -216,8 +240,8 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
           In TradingView, copy a screenshot to clipboard, click this box, then
-          press Ctrl+V or Cmd+V. The images will be attached to the current
-          pair on the server.
+          press Ctrl+V or Cmd+V. The images stay attached to the current pair
+          until you clear them.
         </p>
       ) : (
         <div className="mt-1 grid max-h-28 grid-cols-3 gap-1 overflow-auto">
@@ -250,15 +274,17 @@ export default function HomePage() {
   // Pairs / watchlist
   const [pairs, setPairs] = useState<string[]>([]);
   const [selectedPair, setSelectedPair] = useState<string>("");
+
+  // Which main view is active
+  const [view, setView] = useState<ViewMode>("dashboard");
+
   const [newPairInput, setNewPairInput] = useState("");
   const [isAddingPair, setIsAddingPair] = useState(false);
 
-  // Bulk selection / deletion
+  // Sidebar selection mode
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedForDelete, setSelectedForDelete] = useState<string[]>([]);
-
-  // Panel tab
-  const [activeTab, setActiveTab] = useState<PairPanelTab>("upload");
+  const [openPairs, setOpenPairs] = useState<Record<string, boolean>>({});
 
   // Timeframes
   const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>([
@@ -285,7 +311,7 @@ export default function HomePage() {
     [],
   );
 
-  // Overlay helper (Pine input)
+  // Overlay helper
   const [overlayConfig, setOverlayConfig] = useState<OverlayConfig>({
     modelName: "MySetup",
     tfNote: "H4,M15",
@@ -307,13 +333,13 @@ export default function HomePage() {
     "idle",
   );
 
-  // Tick the clock for candle timers
+  // Clock for candle timers
   useEffect(() => {
     const id = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Load pairs from server
+  // Load pairs from server, but do NOT auto-select
   useEffect(() => {
     const loadPairs = async () => {
       try {
@@ -323,16 +349,12 @@ export default function HomePage() {
         const fromServer =
           data.pairs && data.pairs.length ? data.pairs : defaultPairs;
         setPairs(fromServer);
-        if (!selectedPair && fromServer.length) {
-          setSelectedPair(fromServer[0]);
-        }
       } catch {
         setPairs(defaultPairs);
-        if (!selectedPair) setSelectedPair(defaultPairs[0]);
       }
     };
     loadPairs();
-  }, [selectedPair]);
+  }, []);
 
   const savePairsToServer = async (symbols: string[]) => {
     try {
@@ -348,9 +370,9 @@ export default function HomePage() {
 
   const updatePairs = (next: string[]) => {
     setPairs(next);
-    if (next.length && !next.includes(selectedPair)) {
-      setSelectedPair(next[0]);
-      setActiveTab("upload");
+    if (!next.includes(selectedPair)) {
+      setSelectedPair("");
+      setView("dashboard");
     }
     savePairsToServer(next);
   };
@@ -625,7 +647,7 @@ export default function HomePage() {
       return;
     }
     if (!selectedPair) {
-      setError("Please select a trading pair.");
+      setError("Please select a trading pair from the sidebar.");
       return;
     }
 
@@ -680,7 +702,7 @@ export default function HomePage() {
           newChecklist,
           newCandleEnds,
         );
-        setActiveTab("analysis");
+        setView("analysis");
       } else {
         setError("Analysis response was empty.");
       }
@@ -809,7 +831,7 @@ export default function HomePage() {
     }
   };
 
-  // Weekly stats for cards
+  // Weekly stats for cards (based on selected pair)
   const nowMs = Date.now();
   const weekAgo = nowMs - 7 * 24 * 60 * 60 * 1000;
   const weeklyEntries = historyEntries.filter(
@@ -828,12 +850,207 @@ export default function HomePage() {
 
   const bestSetup = sortedAnalyzed[0] ?? null;
 
-  // ─────────────────────────────────────────────
-  // JSX
-  // ─────────────────────────────────────────────
+  // Sidebar pair row renderer (Material UI)
+  const renderPairRow = (pair: string, summary?: SetupSummary) => {
+    const isSelected = pair === selectedPair;
+    const isMarkedForDelete = selectedForDelete.includes(pair);
+    const isOpen = !!openPairs[pair];
+
+    const handleToggleOpen = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setOpenPairs((prev) => ({ ...prev, [pair]: !prev[pair] }));
+    };
+
+    const handleMainClick = () => {
+      if (selectionMode) {
+        togglePairSelectionForDelete(pair);
+      } else {
+        setSelectedPair(pair);
+        setView(summary ? "analysis" : "upload");
+        setOpenPairs((prev) => ({ ...prev, [pair]: true }));
+      }
+    };
+
+    const primaryText = pair;
+    const secondaryText = summary
+      ? `${summary.qualityLabel || "N/A"} ${
+          summary.qualityScore ? `(${summary.qualityScore.toFixed(0)})` : ""
+        }`
+      : "No analysis yet";
+
+    const chipColor =
+      summary && summary.qualityLabel.toUpperCase().includes("A+")
+        ? "#fbbf24"
+        : "#4ade80";
+
+    return (
+      <React.Fragment key={pair}>
+        <ListItem
+          disableGutters
+          sx={{
+            mb: 0.5,
+            borderRadius: 2,
+            bgcolor: isSelected ? "#020617" : "#030712",
+            border: "1px solid",
+            borderColor: isSelected ? "#22c55e" : "#1f2937",
+          }}
+        >
+          {selectionMode && (
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePairSelectionForDelete(pair);
+              }}
+              sx={{ color: isMarkedForDelete ? "#22c55e" : "#6b7280" }}
+            >
+              {isMarkedForDelete ? (
+                <CheckBoxIcon sx={{ fontSize: 16 }} />
+              ) : (
+                <CheckBoxOutlineBlankIcon sx={{ fontSize: 16 }} />
+              )}
+            </IconButton>
+          )}
+          <Box sx={{ flexGrow: 1 }}>
+            <ListItemButton
+              onClick={handleMainClick}
+              sx={{
+                borderRadius: 2,
+                pr: 0,
+                minHeight: 40,
+              }}
+            >
+              <ListItemText
+                primary={
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <Box
+                      sx={{
+                        px: 1.5,
+                        py: 0.5,
+                        borderRadius: 999,
+                        bgcolor: isSelected ? "#22c55e" : "#111827",
+                        color: isSelected ? "#020617" : "#e5e7eb",
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {primaryText}
+                    </Box>
+                    {summary && (
+                      <Chip
+                        label={secondaryText}
+                        size="small"
+                        sx={{
+                          height: 20,
+                          borderRadius: 999,
+                          bgcolor: chipColor + "33",
+                          color: chipColor,
+                          fontSize: 10,
+                        }}
+                      />
+                    )}
+                  </Box>
+                }
+                secondary={
+                  !summary && (
+                    <Typography
+                      variant="caption"
+                      sx={{ fontSize: 11, color: "#9ca3af" }}
+                    >
+                      Watchlist only
+                    </Typography>
+                  )
+                }
+              />
+            </ListItemButton>
+          </Box>
+          <IconButton
+            size="small"
+            onClick={handleToggleOpen}
+            sx={{ color: "#6b7280", ml: 0.5 }}
+          >
+            {isOpen ? (
+              <ExpandLessIcon sx={{ fontSize: 18 }} />
+            ) : (
+              <ExpandMoreIcon sx={{ fontSize: 18 }} />
+            )}
+          </IconButton>
+        </ListItem>
+
+        <Collapse in={isOpen} timeout="auto" unmountOnExit>
+          <Box
+            sx={{
+              pl: selectionMode ? 4.5 : 1,
+              pb: 1,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 0.5,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPair(pair);
+                setView("upload");
+              }}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                view === "upload" && pair === selectedPair
+                  ? "bg-emerald-500 text-black"
+                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              Upload
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPair(pair);
+                setView("analysis");
+              }}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                view === "analysis" && pair === selectedPair
+                  ? "bg-emerald-500 text-black"
+                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              Analysis
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPair(pair);
+                setView("predictions");
+              }}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                view === "predictions" && pair === selectedPair
+                  ? "bg-emerald-500 text-black"
+                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              Predictions
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPair(pair);
+                setView("history");
+              }}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
+                view === "history" && pair === selectedPair
+                  ? "bg-emerald-500 text-black"
+                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              History
+            </button>
+          </Box>
+        </Collapse>
+      </React.Fragment>
+    );
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
+    <Box className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
       {/* Top nav */}
       <header className="border-b border-zinc-800 bg-black/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
@@ -871,320 +1088,225 @@ export default function HomePage() {
       </header>
 
       <div className="mx-auto flex max-w-6xl gap-4 px-4 py-6">
-        {/* Sidebar */}
-        <aside className="w-72 flex-shrink-0 space-y-4">
-          <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 px-3 py-3 text-xs shadow-lg">
-            {/* Sidebar header */}
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900 text-lg">
-                  ⇄
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-zinc-50">
-                    Trading workspace
-                  </h2>
-                  <p className="text-[11px] text-zinc-500">
-                    Watchlist grouped by analyzed quality.
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1 text-[11px]">
-                {/* Selection mode */}
-                <button
-                  type="button"
-                  onClick={toggleSelectionMode}
-                  title="Toggle selection mode"
-                  className={`flex h-7 w-7 items-center justify-center rounded-full border text-[13px] ${
+        {/* Sidebar with Material UI */}
+        <Box sx={{ width: 280, flexShrink: 0 }}>
+          <Paper
+            elevation={3}
+            sx={{
+              backgroundColor: "#020617",
+              borderRadius: 3,
+              border: "1px solid #1f2937",
+              padding: 1.5,
+              color: "#e5e7eb",
+            }}
+          >
+            <Box
+              display="flex"
+              justifyContent="space-between"
+              alignItems="center"
+              mb={1}
+            >
+              <Box>
+                <Typography
+                  variant="subtitle2"
+                  sx={{ fontSize: 13, fontWeight: 600 }}
+                >
+                  Workspace
+                </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{ fontSize: 11, color: "#9ca3af" }}
+                >
+                  Choose dashboard or a pair.
+                </Typography>
+              </Box>
+
+              <Box display="flex" alignItems="center" gap={0.5}>
+                <Tooltip
+                  title={
                     selectionMode
-                      ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
-                      : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500"
-                  }`}
+                      ? "Exit selection mode"
+                      : "Enable selection mode"
+                  }
                 >
-                  {selectionMode ? "☑" : "☐"}
-                </button>
-
-                {/* Select all */}
-                {selectionMode && (
-                  <button
-                    type="button"
-                    onClick={selectAllPairsForDelete}
-                    title="Select all pairs"
-                    className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[12px] text-zinc-400 hover:border-zinc-500"
+                  <IconButton
+                    size="small"
+                    onClick={toggleSelectionMode}
+                    sx={{
+                      color: selectionMode ? "#22c55e" : "#6b7280",
+                    }}
                   >
-                    ☆
-                  </button>
+                    {selectionMode ? (
+                      <CheckBoxIcon sx={{ fontSize: 18 }} />
+                    ) : (
+                      <CheckBoxOutlineBlankIcon sx={{ fontSize: 18 }} />
+                    )}
+                  </IconButton>
+                </Tooltip>
+
+                {selectionMode && (
+                  <>
+                    <Tooltip title="Select all pairs">
+                      <IconButton
+                        size="small"
+                        onClick={selectAllPairsForDelete}
+                        sx={{ color: "#6b7280" }}
+                      >
+                        <SelectAllIcon sx={{ fontSize: 18 }} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Delete selected pairs">
+                      <span>
+                        <IconButton
+                          size="small"
+                          onClick={handleBulkDelete}
+                          disabled={!selectedForDelete.length}
+                          sx={{
+                            color: selectedForDelete.length
+                              ? "#f97373"
+                              : "#374151",
+                          }}
+                        >
+                          <DeleteIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </>
                 )}
 
-                {/* Delete */}
-                {selectionMode && (
-                  <button
-                    type="button"
-                    onClick={handleBulkDelete}
-                    disabled={!selectedForDelete.length}
-                    title="Delete selected"
-                    className={`flex h-7 w-7 items-center justify-center rounded-full border text-[13px] ${
-                      selectedForDelete.length
-                        ? "border-red-500 bg-red-500/20 text-red-300 hover:bg-red-500/30"
-                        : "border-zinc-800 bg-zinc-900 text-zinc-600"
-                    }`}
+                <Tooltip title="Add pair">
+                  <IconButton
+                    size="small"
+                    onClick={() => setIsAddingPair(true)}
+                    sx={{ color: "#22c55e" }}
                   >
-                    🗑
-                  </button>
-                )}
+                    <AddIcon sx={{ fontSize: 18 }} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            </Box>
 
-                {/* Add */}
-                <button
-                  type="button"
-                  onClick={() => setIsAddingPair(true)}
-                  title="Add pair"
-                  className="flex h-7 w-7 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-[16px] text-emerald-300 hover:border-emerald-400 hover:text-emerald-200"
+            {/* Dashboard entry */}
+            <List dense disablePadding>
+              <ListItem disableGutters sx={{ mb: 0.5 }}>
+                <ListItemButton
+                  selected={view === "dashboard"}
+                  onClick={() => {
+                    setView("dashboard");
+                    setSelectedPair("");
+                  }}
+                  sx={{
+                    borderRadius: 2,
+                    bgcolor: view === "dashboard" ? "#0f172a" : "transparent",
+                  }}
                 >
-                  +
-                </button>
-              </div>
-            </div>
+                  <DashboardIcon
+                    sx={{ fontSize: 18, mr: 1.5, color: "#22c55e" }}
+                  />
+                  <ListItemText
+                    primary="Dashboard"
+                    secondary="Weekly stats and radar"
+                    primaryTypographyProps={{
+                      sx: { fontSize: 13, fontWeight: 600 },
+                    }}
+                    secondaryTypographyProps={{
+                      sx: { fontSize: 11, color: "#9ca3af" },
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            </List>
+
+            <Divider sx={{ my: 1.5, borderColor: "#1f2937" }} />
 
             {/* Analyzed section */}
-            <div className="mb-2">
-              <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
-                <span>Analyzed setups</span>
-                <span>{sortedAnalyzed.length}</span>
-              </div>
+            <List
+              dense
+              subheader={
+                <ListSubheader
+                  disableSticky
+                  sx={{
+                    bgcolor: "transparent",
+                    color: "#9ca3af",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    px: 0,
+                  }}
+                >
+                  Analyzed setups ({sortedAnalyzed.length})
+                </ListSubheader>
+              }
+            >
               {sortedAnalyzed.length ? (
-                <div className="space-y-1.5">
-                  {sortedAnalyzed.map((s) => {
-                    const isSelected = s.pair === selectedPair;
-                    const isMarkedForDelete =
-                      selectedForDelete.includes(s.pair);
-                    return (
-                      <div
-                        key={s.pair}
-                        className={`rounded-2xl border px-2 py-1.5 text-[11px] transition-all duration-200 ${
-                          isSelected
-                            ? "border-emerald-500/70 bg-zinc-950"
-                            : "border-zinc-800 bg-zinc-950/80 hover:border-zinc-700"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <div className="flex items-center gap-2">
-                            {selectionMode && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  togglePairSelectionForDelete(s.pair);
-                                }}
-                                className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] ${
-                                  isMarkedForDelete
-                                    ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
-                                    : "border-zinc-600 bg-zinc-950 text-zinc-500"
-                                }`}
-                              >
-                                {isMarkedForDelete ? "✓" : ""}
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!selectionMode) {
-                                  setSelectedPair(s.pair);
-                                  setActiveTab("analysis");
-                                }
-                              }}
-                              className="flex items-center gap-2"
-                            >
-                              <span
-                                className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
-                                  isSelected
-                                    ? "bg-emerald-500 text-black"
-                                    : "bg-zinc-900 text-zinc-100"
-                                }`}
-                              >
-                                {s.pair}
-                              </span>
-                              <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                                {s.qualityLabel}{" "}
-                                {s.qualityScore
-                                  ? `(${s.qualityScore.toFixed(0)})`
-                                  : ""}
-                              </span>
-                            </button>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!selectionMode) {
-                                setSelectedPair(s.pair);
-                                setActiveTab(
-                                  isSelected ? activeTab : "analysis",
-                                );
-                              }
-                            }}
-                            className={`text-[13px] text-zinc-500 transition-transform ${
-                              isSelected ? "rotate-90" : ""
-                            }`}
-                          >
-                            ▸
-                          </button>
-                        </div>
-
-                        {/* Collapsible btns */}
-                        <div
-                          className={`mt-1 grid overflow-hidden transition-all duration-200 ${
-                            isSelected
-                              ? "max-h-16 opacity-100"
-                              : "max-h-0 opacity-0"
-                          }`}
-                        >
-                          <div className="flex flex-wrap gap-1 pt-1">
-                            {(["upload",
-                              "analysis",
-                              "predictions",
-                              "history"] as PairPanelTab[]).map((tab) => (
-                              <button
-                                key={tab}
-                                type="button"
-                                onClick={() => setActiveTab(tab)}
-                                className={`rounded-full px-2.5 py-0.5 text-[11px] ${
-                                  activeTab === tab
-                                    ? "bg-emerald-500 text-black"
-                                    : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                                }`}
-                              >
-                                {tab[0].toUpperCase() + tab.slice(1)}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                sortedAnalyzed.map((s) => renderPairRow(s.pair, s))
               ) : (
-                <p className="rounded-lg bg-zinc-950/80 px-2 py-2 text-[11px] text-zinc-500">
-                  Once you run analysis for a pair, it appears here with quality
-                  grade (A+, A, B).
-                </p>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    mt: 0.5,
+                    display: "block",
+                  }}
+                >
+                  Once you analyze a pair, it appears here with quality grade.
+                </Typography>
               )}
-            </div>
+            </List>
 
-            <div className="my-2 border-t border-zinc-800" />
+            <Divider sx={{ my: 1.5, borderColor: "#1f2937" }} />
 
-            {/* Watchlist */}
-            <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
-                <span>Watchlist pairs</span>
-                <span>{normalPairs.length}</span>
-              </div>
-              <div className="space-y-1.5">
-                {normalPairs.map((p) => {
-                  const isSelected = p === selectedPair;
-                  const isMarkedForDelete = selectedForDelete.includes(p);
-                  return (
-                    <div
-                      key={p}
-                      className={`rounded-2xl border px-2 py-1.5 text-[11px] transition-all duration-200 ${
-                        isSelected
-                          ? "border-emerald-500/70 bg-zinc-950"
-                          : "border-zinc-800 bg-zinc-950/80 hover:border-zinc-700"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <div className="flex items-center gap-2">
-                          {selectionMode && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePairSelectionForDelete(p);
-                              }}
-                              className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] ${
-                                isMarkedForDelete
-                                  ? "border-emerald-400 bg-emerald-500/20 text-emerald-300"
-                                  : "border-zinc-600 bg-zinc-950 text-zinc-500"
-                              }`}
-                            >
-                              {isMarkedForDelete ? "✓" : ""}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!selectionMode) {
-                                setSelectedPair(p);
-                                setActiveTab("upload");
-                              }
-                            }}
-                            className="flex items-center gap-2"
-                          >
-                            <span
-                              className={`rounded-full px-3 py-1 text-[12px] font-semibold ${
-                                isSelected
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-100"
-                              }`}
-                            >
-                              {p}
-                            </span>
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!selectionMode) {
-                              setSelectedPair(p);
-                              setActiveTab(
-                                isSelected ? activeTab : "upload",
-                              );
-                            }
-                          }}
-                          className={`text-[13px] text-zinc-500 transition-transform ${
-                            isSelected ? "rotate-90" : ""
-                          }`}
-                        >
-                          ▸
-                        </button>
-                      </div>
+            {/* Watchlist section */}
+            <List
+              dense
+              subheader={
+                <ListSubheader
+                  disableSticky
+                  sx={{
+                    bgcolor: "transparent",
+                    color: "#9ca3af",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    px: 0,
+                  }}
+                >
+                  Watchlist pairs ({normalPairs.length})
+                </ListSubheader>
+              }
+            >
+              {normalPairs.length ? (
+                normalPairs.map((p) => renderPairRow(p))
+              ) : (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                    mt: 0.5,
+                    display: "block",
+                  }}
+                >
+                  No pure watchlist pairs. Add more symbols or remove some
+                  analyzed ones.
+                </Typography>
+              )}
 
-                      {/* Collapsible buttons */}
-                      <div
-                        className={`mt-1 grid overflow-hidden transition-all duration-200 ${
-                          isSelected
-                            ? "max-h-16 opacity-100"
-                            : "max-h-0 opacity-0"
-                        }`}
-                      >
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {(["upload",
-                            "analysis",
-                            "predictions",
-                            "history"] as PairPanelTab[]).map((tab) => (
-                            <button
-                              key={tab}
-                              type="button"
-                              onClick={() => setActiveTab(tab)}
-                              className={`rounded-full px-2.5 py-0.5 text-[11px] ${
-                                activeTab === tab
-                                  ? "bg-emerald-500 text-black"
-                                  : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                              }`}
-                            >
-                              {tab[0].toUpperCase() + tab.slice(1)}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Add pair row */}
-                {isAddingPair && (
-                  <div className="inline-flex w-full items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-950/80 px-2 py-1.5">
-                    <input
+              {/* Add pair row */}
+              {isAddingPair && (
+                <Box
+                  sx={{
+                    mt: 1,
+                    borderRadius: 2,
+                    border: "1px solid #1f2937",
+                    backgroundColor: "#030712",
+                    p: 1,
+                  }}
+                >
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <TextField
                       autoFocus
-                      className="w-28 bg-transparent text-[12px] uppercase text-zinc-100 outline-none"
+                      variant="standard"
+                      placeholder="EURUSD"
                       value={newPairInput}
                       onChange={(e) =>
                         setNewPairInput(e.target.value.toUpperCase())
@@ -1196,35 +1318,42 @@ export default function HomePage() {
                           setNewPairInput("");
                         }
                       }}
-                      placeholder="EURUSD"
+                      InputProps={{
+                        disableUnderline: true,
+                        sx: {
+                          fontSize: 12,
+                          color: "#e5e7eb",
+                          textTransform: "uppercase",
+                          px: 1,
+                          py: 0.5,
+                        },
+                      }}
+                      sx={{
+                        flexGrow: 1,
+                        borderRadius: 1,
+                        border: "1px solid #374151",
+                        backgroundColor: "#020617",
+                      }}
                     />
                     <button
                       type="button"
                       onClick={handleAddPair}
-                      className="text-[11px] text-emerald-400 hover:text-emerald-300"
-                      title="Add pair"
+                      className="rounded-full bg-emerald-500 px-3 py-1 text-[11px] font-semibold text-black hover:bg-emerald-400"
                     >
                       Save
                     </button>
-                  </div>
-                )}
+                  </Box>
+                </Box>
+              )}
+            </List>
+          </Paper>
+        </Box>
 
-                {!pairs.length && !isAddingPair && (
-                  <p className="text-[11px] text-zinc-500">
-                    No pairs yet. Use the plus icon above to add your first
-                    symbol.
-                  </p>
-                )}
-              </div>
-            </div>
-          </section>
-        </aside>
-
-        {/* Main */}
+        {/* Main area */}
         <main className="flex-1 space-y-4">
-          {/* Dashboard cards row */}
-          <div className="grid gap-3 md:grid-cols-3">
-            {/* Card 1: Weekly report */}
+          {/* Cards row (always visible) */}
+          <section className="grid gap-3 md:grid-cols-3">
+            {/* Weekly stats */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
               <div className="mb-1 flex items-center justify-between">
                 <div>
@@ -1265,13 +1394,13 @@ export default function HomePage() {
                     {weeklyTotal ? `${weeklyHitRate}%` : "—"}
                   </p>
                   <p className="mt-1 text-[10px] text-zinc-500">
-                    Once you mark outcomes, this gives a real weekly report.
+                    Once you mark outcomes, this becomes a real weekly report.
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Card 2: Best setup */}
+            {/* Best setup */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
               <div className="mb-1 flex items-center justify-between">
                 <div>
@@ -1283,7 +1412,7 @@ export default function HomePage() {
                   </p>
                 </div>
                 <div className="rounded-full bg-amber-500/20 px-3 py-1 text-[11px] font-semibold text-amber-300">
-                  ☆ A+ radar
+                  A+ radar
                 </div>
               </div>
               <div className="mt-2 flex items-end justify-between">
@@ -1309,14 +1438,14 @@ export default function HomePage() {
                   </>
                 ) : (
                   <p className="text-[11px] text-zinc-500">
-                    Run analysis on a few pairs and your best A+ style setup
-                    will show up here.
+                    Run analysis on a few pairs. The top A+ style setup shows
+                    here.
                   </p>
                 )}
               </div>
             </div>
 
-            {/* Card 3: Activity */}
+            {/* Activity */}
             <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-3 text-xs shadow-lg">
               <div className="mb-1 flex items-center justify-between">
                 <div>
@@ -1324,7 +1453,7 @@ export default function HomePage() {
                     Analysis activity
                   </p>
                   <p className="text-[11px] text-zinc-500">
-                    How much work you have done across the workspace.
+                    How much work you have done in this workspace.
                   </p>
                 </div>
               </div>
@@ -1348,22 +1477,22 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-          </div>
+          </section>
 
-          {/* Small header line */}
+          {/* Small mode summary */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-3 text-xs shadow-lg">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-400">
+                <span className="rounded-full bg-zinc-900 px-2 py-0.5">
+                  View:{" "}
+                  <span className="font-semibold text-zinc-100">
+                    {view}
+                  </span>
+                </span>
                 <span className="rounded-full bg-zinc-900 px-2 py-0.5">
                   Pair:{" "}
                   <span className="font-semibold text-zinc-100">
                     {selectedPair || "none"}
-                  </span>
-                </span>
-                <span className="rounded-full bg-zinc-900 px-2 py-0.5">
-                  Mode:{" "}
-                  <span className="font-semibold text-zinc-100">
-                    {activeTab}
                   </span>
                 </span>
                 {selectedTimeframes.length > 0 && (
@@ -1372,16 +1501,85 @@ export default function HomePage() {
                   </span>
                 )}
               </div>
-              <div className="text-[10px] text-zinc-500">
-                Left side: pick pair and mode. Right side: details.
+              <div className="flex items-center gap-1 text-[11px] text-zinc-500">
+                <UploadIcon sx={{ fontSize: 14 }} />
+                <AssessmentIcon sx={{ fontSize: 14 }} />
+                <TimelineIcon sx={{ fontSize: 14 }} />
+                <HistoryIcon sx={{ fontSize: 14 }} />
               </div>
             </div>
           </section>
 
-          {/* UPLOAD TAB */}
-          {activeTab === "upload" && (
+          {/* DASHBOARD VIEW */}
+          {view === "dashboard" && (
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-50">
+                    Global setup radar
+                  </h2>
+                  <p className="text-[11px] text-zinc-500">
+                    Overview of all pairs you have analyzed, sorted by
+                    quality. Choose a pair in the sidebar to drill into
+                    Upload, Analysis, Predictions or History.
+                  </p>
+                </div>
+              </div>
+              {setupRadar.length ? (
+                <div className="space-y-1 text-[11px]">
+                  {sortedAnalyzed.map((s) => (
+                    <div
+                      key={s.pair}
+                      className="flex flex-col gap-1 rounded-md border border-zinc-800 bg-black/60 px-2 py-2 md:flex-row md:items-start md:gap-3"
+                    >
+                      <div className="md:w-44">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPair(s.pair);
+                            setView("analysis");
+                          }}
+                          className="rounded-full bg-zinc-900 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-800"
+                        >
+                          {s.pair}
+                        </button>
+                        <p className="mt-1 text-[10px] text-amber-300">
+                          {s.qualityLabel || "N/A"}{" "}
+                          {s.qualityScore
+                            ? `(${s.qualityScore.toFixed(0)})`
+                            : ""}
+                        </p>
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <p className="text-[11px] text-zinc-300">
+                          <span className="font-semibold text-zinc-400">
+                            Bias:
+                          </span>{" "}
+                          {s.biasSnippet || "No bias summary."}
+                        </p>
+                        <p className="text-[11px] text-emerald-300">
+                          <span className="font-semibold text-emerald-400">
+                            Scenario:
+                          </span>{" "}
+                          {s.nextMoveSnippet ||
+                            "No scenario summary for this pair yet."}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-zinc-500">
+                  Once you run at least one analysis, the global radar will
+                  show your pairs ordered from strongest to weakest setups.
+                </p>
+              )}
+            </section>
+          )}
+
+          {/* UPLOAD VIEW */}
+          {view === "upload" && (
             <section className="space-y-4">
-              {/* Timeframes + screenshots */}
               <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -1389,9 +1587,9 @@ export default function HomePage() {
                       Timeframes and chart screenshots
                     </h2>
                     <p className="text-[11px] text-zinc-500">
-                      Select the structure you are studying, then upload or paste
-                      actual TradingView charts. Screenshots stay attached to
-                      this pair until you remove them.
+                      Select the structure you are studying, then upload or
+                      paste real TradingView charts. Screenshots stay attached
+                      to this pair until you clear them.
                     </p>
                   </div>
                 </div>
@@ -1532,7 +1730,7 @@ export default function HomePage() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder={
-                    "Example:\n- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high-probability entry with SL / TP idea?"
+                    "Example:\n- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high probability entry with SL / TP idea?"
                   }
                 />
                 <div className="flex items-center justify-between gap-2">
@@ -1559,8 +1757,8 @@ export default function HomePage() {
             </section>
           )}
 
-          {/* ANALYSIS TAB */}
-          {activeTab === "analysis" && (
+          {/* ANALYSIS VIEW */}
+          {view === "analysis" && (
             <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
               <div className="mb-2 flex items-center justify-between">
                 <div>
@@ -1841,8 +2039,8 @@ export default function HomePage() {
             </section>
           )}
 
-          {/* PREDICTIONS TAB */}
-          {activeTab === "predictions" && (
+          {/* PREDICTIONS VIEW */}
+          {view === "predictions" && (
             <section className="space-y-4">
               <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
                 <div className="mb-2 flex items-center justify-between">
@@ -2186,8 +2384,7 @@ export default function HomePage() {
                       </button>
                     </div>
                     <div className="text-[11px] text-zinc-500">
-                      Paste this line into your Pine indicator&apos;s Config
-                      input.
+                      Paste this line into your Pine indicator config input.
                     </div>
                   </div>
 
@@ -2208,77 +2405,19 @@ export default function HomePage() {
                       )}
                       {copyStatus === "error" && (
                         <p className="mt-1 text-[10px] text-red-400">
-                          Could not copy – you can still manually use Ctrl+C or
-                          Cmd+C on the text above.
+                          Could not copy. You can still use Ctrl+C or Cmd+C on
+                          the text above.
                         </p>
                       )}
                     </div>
                   )}
                 </div>
               </section>
-
-              {/* Cross pair radar summary */}
-              <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
-                <div className="mb-2 flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-zinc-50">
-                    Setup radar across all pairs
-                  </h2>
-                </div>
-                {setupRadar.length ? (
-                  <div className="space-y-1 text-[11px]">
-                    {sortedAnalyzed.map((s) => (
-                      <div
-                        key={s.pair}
-                        className="flex flex-col gap-1 rounded-md border border-zinc-800 bg-black/60 px-2 py-2 md:flex-row md:items-start md:gap-3"
-                      >
-                        <div className="flex items-center gap-2 md:w-40">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedPair(s.pair);
-                              setActiveTab("predictions");
-                            }}
-                            className="rounded-full bg-zinc-900 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-800"
-                          >
-                            {s.pair}
-                          </button>
-                          <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                            {s.qualityLabel}{" "}
-                            {s.qualityScore
-                              ? `(${s.qualityScore.toFixed(0)})`
-                              : ""}
-                          </span>
-                        </div>
-                        <div className="flex-1 space-y-1">
-                          <p className="text-[11px] text-zinc-300">
-                            <span className="font-semibold text-zinc-400">
-                              Bias:
-                            </span>{" "}
-                            {s.biasSnippet || "No bias summary available."}
-                          </p>
-                          <p className="text-[11px] text-emerald-300">
-                            <span className="font-semibold text-emerald-400">
-                              Scenario:
-                            </span>{" "}
-                            {s.nextMoveSnippet ||
-                              "No scenario summary for this pair yet."}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-[11px] text-zinc-500">
-                    Once you have analysed a few pairs, this radar shows which
-                    ones are closest to an A+ setup based on your rules.
-                  </p>
-                )}
-              </section>
             </section>
           )}
 
-          {/* HISTORY TAB */}
-          {activeTab === "history" && (
+          {/* HISTORY VIEW */}
+          {view === "history" && (
             <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-zinc-50">
@@ -2353,8 +2492,8 @@ export default function HomePage() {
                 ) : (
                   <p className="text-[11px] text-zinc-500">
                     No history for this pair yet. Every time you analyze, a
-                    snapshot is saved here so you can later compare how the
-                    market evolved around your idea.
+                    snapshot is saved so you can later compare how the market
+                    evolved around your idea.
                   </p>
                 )}
               </div>
@@ -2362,6 +2501,6 @@ export default function HomePage() {
           )}
         </main>
       </div>
-    </div>
+    </Box>
   );
 }
