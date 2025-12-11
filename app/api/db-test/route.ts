@@ -8,7 +8,7 @@ export async function GET() {
         ok: false,
         hasDb: false,
         message:
-          "No POSTGRES_URL / POSTGRES_URL_NON_POOLING in env. Running in fallback mode.",
+          "No DB connection string in env. Running in fallback mode.",
       },
       { status: 200 }
     );
