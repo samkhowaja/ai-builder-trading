@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { dbQuery, hasDb } from "@/lib/db";
 
-const DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
+const DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "CADUSD"];
 
 type PairRow = {
   id: number;
