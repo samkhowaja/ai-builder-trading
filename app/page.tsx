@@ -1,22 +1,12 @@
-// app/page.tsx
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
 
-type UploadImage = {
-  name: string;
-  dataUrl: string;
-};
+// Types
+type UploadImage = { name: string; dataUrl: string };
+type ClipboardImage = { id: string; previewUrl: string };
 
-type ClipboardImage = {
-  id: string;
-  previewUrl: string;
-};
-
-type ChecklistItem = {
-  text: string;
-  satisfied: boolean;
-};
+type ChecklistItem = { text: string; satisfied: boolean };
 
 type ScreenshotGuide = {
   title: string;
@@ -51,16 +41,9 @@ type AnalyzeResponse = {
   error?: string;
 };
 
-type ChecklistItemState = {
-  text: string;
-  done: boolean;
-};
+type ChecklistItemState = { text: string; done: boolean };
 
-type ChartImage = {
-  id: string;
-  name: string;
-  dataUrl: string;
-};
+type ChartImage = { id: string; name: string; dataUrl: string };
 
 type ChartAnalysisEntry = {
   id: string;
@@ -148,7 +131,7 @@ function buildSearchUrl(platform: string, query: string): string {
   }
 }
 
-/** Clipboard paste zone for screenshots (thumbnail only) */
+// Clipboard paste zone
 function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
   const [images, setImages] = useState<ClipboardImage[]>([]);
 
@@ -183,15 +166,15 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
     <div
       onPaste={handlePaste}
       tabIndex={0}
-      className="flex min-h-[140px] flex-col rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 px-4 py-3 text-xs text-zinc-300 outline-none focus:ring-2 focus:ring-emerald-500/60"
+      className="flex min-h-[120px] flex-col rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300 outline-none focus:ring-2 focus:ring-emerald-500/60"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <p>
           📸{" "}
           <span className="font-semibold text-zinc-100">
-            Paste screenshots from clipboard
+            Paste screenshots
           </span>{" "}
-          (Ctrl+V or Cmd+V) while this panel is focused.
+          (Ctrl+V / Cmd+V) while this box is focused.
         </p>
         <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">
           Click here then paste
@@ -200,12 +183,12 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 
       {images.length === 0 ? (
         <p className="text-[11px] text-zinc-500">
-          In TradingView copy a screenshot to clipboard, click this box, and
-          press Ctrl+V or Cmd+V. The images will be stored under the current
+          In TradingView, copy a screenshot to clipboard, click this box,
+          then press Ctrl+V or Cmd+V. They will be attached to the current
           pair on the server.
         </p>
       ) : (
-        <div className="mt-2 grid max-h-40 grid-cols-2 gap-2 overflow-auto">
+        <div className="mt-1 grid max-h-28 grid-cols-3 gap-1 overflow-auto">
           {images.map((img) => (
             <div
               key={img.id}
@@ -225,67 +208,105 @@ function ClipboardPasteZone(props: { onImages?: (files: File[]) => void }) {
 }
 
 export default function HomePage() {
+  // Pairs
   const [pairs, setPairs] = useState<string[]>([]);
-  const [pairsText, setPairsText] = useState("");
   const [selectedPair, setSelectedPair] = useState<string>("");
+  const [newPairInput, setNewPairInput] = useState("");
+  const [isAddingPair, setIsAddingPair] = useState(false);
 
+  // Timeframes
   const [selectedTimeframes, setSelectedTimeframes] = useState<string[]>([
     "H4",
     "H1",
     "M15",
   ]);
 
+  // Charts & notes
   const [chartImages, setChartImages] = useState<ChartImage[]>([]);
   const [notes, setNotes] = useState("");
 
+  // Analysis state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<ChartAnalysis | null>(null);
   const [checklist, setChecklist] = useState<ChecklistItemState[]>([]);
-
   const [candleEnds, setCandleEnds] = useState<Record<string, number>>({});
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
 
+  // Radar & history
   const [setupRadar, setSetupRadar] = useState<SetupSummary[]>([]);
   const [historyEntries, setHistoryEntries] = useState<ChartAnalysisEntry[]>(
     [],
   );
 
-  // Tick "now" so timers update
+  // Tick time
   useEffect(() => {
     const id = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Load pairs from server on first render
+  // Load pairs from server
   useEffect(() => {
     const loadPairs = async () => {
       try {
         const res = await fetch("/api/pairs");
-        if (!res.ok) {
-          throw new Error("Failed to load pairs");
-        }
+        if (!res.ok) throw new Error("Failed to load pairs");
         const data: { pairs: string[] } = await res.json();
         const fromServer =
           data.pairs && data.pairs.length ? data.pairs : defaultPairs;
         setPairs(fromServer);
-        setPairsText(fromServer.join("\n"));
         if (!selectedPair && fromServer.length) {
           setSelectedPair(fromServer[0]);
         }
-      } catch (e) {
-        console.error("loadPairs error", e);
+      } catch {
         setPairs(defaultPairs);
-        setPairsText(defaultPairs.join("\n"));
-        if (!selectedPair) {
-          setSelectedPair(defaultPairs[0]);
-        }
+        if (!selectedPair) setSelectedPair(defaultPairs[0]);
       }
     };
     loadPairs();
   }, [selectedPair]);
 
-  // Build radar from server
+  // Save pairs
+  const savePairsToServer = async (symbols: string[]) => {
+    try {
+      await fetch("/api/pairs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pairs: symbols }),
+      });
+    } catch (e) {
+      console.error("savePairs error", e);
+    }
+  };
+
+  const updatePairs = (next: string[]) => {
+    setPairs(next);
+    if (next.length && !next.includes(selectedPair)) {
+      setSelectedPair(next[0]);
+    }
+    savePairsToServer(next);
+  };
+
+  const handleAddPair = () => {
+    const raw = newPairInput.trim().toUpperCase();
+    if (!raw) return;
+    if (pairs.includes(raw)) {
+      setNewPairInput("");
+      setIsAddingPair(false);
+      return;
+    }
+    const next = [...pairs, raw];
+    setNewPairInput("");
+    setIsAddingPair(false);
+    updatePairs(next);
+  };
+
+  const handleRemovePair = (symbol: string) => {
+    const next = pairs.filter((p) => p !== symbol);
+    updatePairs(next);
+  };
+
+  // Radar
   const refreshSetupRadarFromServer = async () => {
     try {
       const res = await fetch("/api/chart-analyses");
@@ -328,7 +349,7 @@ export default function HomePage() {
     refreshSetupRadarFromServer();
   }, []);
 
-  // Helper: load a specific history entry into the main view
+  // Load history for current pair
   const loadHistoryEntryIntoView = (entry: ChartAnalysisEntry) => {
     setAnalysis(entry.analysis);
     setNotes(entry.notes || "");
@@ -351,7 +372,6 @@ export default function HomePage() {
     }
   };
 
-  // Load latest analysis + history for current pair
   useEffect(() => {
     const loadPairAnalysis = async () => {
       if (!selectedPair) {
@@ -368,9 +388,7 @@ export default function HomePage() {
             selectedPair,
           )}&history=1`,
         );
-        if (!res.ok) {
-          throw new Error("Failed to load analysis");
-        }
+        if (!res.ok) throw new Error("Failed to load analysis");
         const data:
           | { entries: ChartAnalysisEntry[] }
           | { entry: ChartAnalysisEntry | null } = await res.json();
@@ -385,7 +403,6 @@ export default function HomePage() {
             setCandleEnds({});
             return;
           }
-          // first one is the latest
           loadHistoryEntryIntoView(entries[0]);
         } else if ("entry" in data) {
           const entry = (data as { entry: ChartAnalysisEntry | null })
@@ -420,52 +437,21 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPair]);
 
-  const savePairsToServer = async (symbols: string[]) => {
-    try {
-      await fetch("/api/pairs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairs: symbols }),
-      });
-    } catch (e) {
-      console.error("savePairs error", e);
-    }
-  };
-
-  const handlePairsTextChange = (raw: string) => {
-    setPairsText(raw);
-    const list = raw
-      .split("\n")
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean);
-    const unique = Array.from(new Set(list));
-    const finalList = unique.length ? unique : defaultPairs;
-    setPairs(finalList);
-    if (finalList.length && !finalList.includes(selectedPair)) {
-      setSelectedPair(finalList[0]);
-    }
-    // persist watchlist to DB
-    savePairsToServer(finalList);
-  };
-
+  // Timeframes
   const toggleTimeframe = (tf: string) => {
     setSelectedTimeframes((prev) =>
       prev.includes(tf) ? prev.filter((t) => t !== tf) : [...prev, tf],
     );
   };
 
-  // Turn uploaded file into ChartImage
+  // Images
   const addFileAsChartImage = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       setChartImages((prev) => [
         ...prev,
-        {
-          id: makeId(),
-          name: file.name || "chart.png",
-          dataUrl,
-        },
+        { id: makeId(), name: file.name || "chart.png", dataUrl },
       ]);
     };
     reader.readAsDataURL(file);
@@ -486,6 +472,7 @@ export default function HomePage() {
     setError(null);
   };
 
+  // Save analysis snapshot
   const saveCurrentStateToServer = async (
     analysisToSave: ChartAnalysis,
     checklistStateToSave: ChecklistItemState[],
@@ -506,9 +493,7 @@ export default function HomePage() {
           chartImages,
         }),
       });
-      // After saving, refresh radar and history
-      refreshSetupRadarFromServer();
-      // also reload history list for this pair (lightweight call)
+      await refreshSetupRadarFromServer();
       const res = await fetch(
         `/api/chart-analyses?pair=${encodeURIComponent(
           selectedPair,
@@ -527,6 +512,7 @@ export default function HomePage() {
     }
   };
 
+  // Analyze charts
   const handleAnalyze = async () => {
     if (!chartImages.length) {
       setError("Please upload or paste at least one chart screenshot.");
@@ -583,7 +569,6 @@ export default function HomePage() {
         setAnalysis(data.analysis);
         setChecklist(newChecklist);
 
-        // Save snapshot to DB (analysis + checklist + images)
         await saveCurrentStateToServer(
           data.analysis,
           newChecklist,
@@ -600,6 +585,7 @@ export default function HomePage() {
     }
   };
 
+  // Text helpers
   const renderParagraphs = (text?: string) =>
     (text || "")
       .split(/\n\s*\n/)
@@ -616,7 +602,6 @@ export default function HomePage() {
         idx === index ? { ...item, done: !item.done } : item,
       );
       if (analysis) {
-        // persist updated checklist to DB as a new snapshot
         saveCurrentStateToServer(analysis, next, candleEnds);
       }
       return next;
@@ -637,6 +622,7 @@ export default function HomePage() {
       minute: "2-digit",
     });
 
+  // JSX
   return (
     <div className="min-h-screen bg-gradient-to-b from-black via-zinc-950 to-black text-zinc-100">
       {/* Top nav */}
@@ -676,109 +662,97 @@ export default function HomePage() {
       </header>
 
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 lg:flex-row">
-        {/* LEFT COLUMN – Controls */}
+        {/* LEFT COLUMN */}
         <aside className="flex w-full flex-col gap-4 lg:w-80">
-          {/* Pairs */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
-            <h2 className="mb-1 text-sm font-semibold text-zinc-50">
-              🎯 Trading workspace
-            </h2>
-            <p className="mb-3 text-[11px] text-zinc-500">
-              Pick your pair and maintain a shared watchlist. Saved on the
-              server so your friend sees the same list.
-            </p>
+          {/* Trading workspace */}
+          <section className="rounded-3xl border border-zinc-800 bg-zinc-950/90 px-4 py-4 text-xs shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900 text-lg">
+                  ⇄
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-50">
+                    Trading workspace
+                  </h2>
+                  <p className="text-[11px] text-zinc-500">
+                    Pick a pair and maintain a shared watchlist.
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-full bg-zinc-900 px-2 py-1 text-[10px] text-zinc-400">
+                Shared
+              </div>
+            </div>
 
-            <div className="mb-2 flex flex-wrap gap-1.5">
+            <div className="mb-3 flex flex-wrap gap-1.5">
               {pairs.map((p) => (
-                <button
+                <div
                   key={p}
-                  onClick={() => setSelectedPair(p)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] ${
+                  className={`inline-flex items-center rounded-full px-3 py-1 text-[12px] ${
                     p === selectedPair
                       ? "bg-emerald-500 text-black"
-                      : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+                      : "bg-zinc-900 text-zinc-100"
                   }`}
                 >
-                  {p}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPair(p)}
+                    className="text-[12px]"
+                  >
+                    {p}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemovePair(p)}
+                    className="ml-2 text-[11px] text-zinc-400 hover:text-zinc-200"
+                    title="Remove pair"
+                  >
+                    ✕
+                  </button>
+                </div>
               ))}
-              {!pairs.length && (
-                <p className="text-[11px] text-zinc-500">
-                  Add some pairs below, one per line.
-                </p>
+              {isAddingPair ? (
+                <div className="inline-flex items-center rounded-full bg-zinc-900 px-3 py-1 text-[12px]">
+                  <input
+                    autoFocus
+                    className="w-20 bg-transparent text-[12px] uppercase text-zinc-100 outline-none"
+                    value={newPairInput}
+                    onChange={(e) =>
+                      setNewPairInput(e.target.value.toUpperCase())
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAddPair();
+                      if (e.key === "Escape") {
+                        setIsAddingPair(false);
+                        setNewPairInput("");
+                      }
+                    }}
+                    placeholder="EURUSD"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddPair}
+                    className="ml-2 text-[11px] text-emerald-400"
+                    title="Add pair"
+                  >
+                    ↵
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsAddingPair(true)}
+                  className="inline-flex items-center rounded-full bg-zinc-900 px-3 py-1 text-[12px] text-zinc-200 hover:bg-zinc-800"
+                >
+                  + Add pair
+                </button>
               )}
-            </div>
-
-            <label className="block text-[11px] text-zinc-400">
-              Edit pairs (one per line)
-              <textarea
-                className="mt-1 h-24 w-full rounded-md border border-zinc-700 bg-black px-2 py-1 text-[11px] outline-none focus:border-emerald-500"
-                value={pairsText}
-                onChange={(e) => handlePairsTextChange(e.target.value)}
-                placeholder={"EURUSD\nGBPUSD\nXAUUSD\nNAS100\nUS30"}
-              />
-            </label>
-          </section>
-
-          {/* Timeframes */}
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
-            <h2 className="mb-1 text-sm font-semibold text-zinc-50">
-              ⏱ Timeframe stack
-            </h2>
-            <p className="mb-3 text-[11px] text-zinc-500">
-              Tell the AI what kind of structure to expect. You can still mix
-              any screenshots.
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              {allTimeframes.map((tf) => {
-                const active = selectedTimeframes.includes(tf);
-                const endTs = candleEnds[tf];
-                const remainingMs =
-                  typeof endTs === "number" ? endTs - nowTs : null;
-                const isClosed =
-                  remainingMs !== null && Number.isFinite(remainingMs)
-                    ? remainingMs <= 0
-                    : false;
-
-                return (
-                  <div key={tf} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => toggleTimeframe(tf)}
-                      className={`rounded-full px-3 py-1 text-[11px] ${
-                        active
-                          ? "bg-emerald-500 text-black"
-                          : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
-                      }`}
-                    >
-                      {tf}
-                    </button>
-                    {isClosed && (
-                      <div className="pointer-events-none absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* candle timers summary */}
-            <div className="mt-2 space-y-1 text-[11px] text-zinc-500">
-              {selectedTimeframes.map((tf) => {
-                const endTs = candleEnds[tf];
-                if (!endTs) return null;
-                const remaining = endTs - nowTs;
-                const isClosed = remaining <= 0;
-                return (
-                  <div key={tf}>
-                    {tf}:{" "}
-                    {isClosed
-                      ? "candle closed – update chart if you want fresh analysis"
-                      : `about ${formatRemaining(
-                          remaining,
-                        )} left in the current candle (approximate)`}
-                  </div>
-                );
-              })}
+              {!pairs.length && !isAddingPair && (
+                <span className="rounded-full bg-zinc-900 px-2 py-1 text-[11px] text-zinc-500">
+                  No pairs yet – add one.
+                </span>
+              )}
             </div>
           </section>
 
@@ -795,9 +769,7 @@ export default function HomePage() {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder={
-                "Example:\n- Tell me the higher timeframe bias and why.\n" +
-                "- Is there liquidity being grabbed here.\n" +
-                "- Where is a high probability entry with SL and TP idea."
+                "Example:\n- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high-probability entry with SL/TP idea?"
               }
             />
           </section>
@@ -842,12 +814,12 @@ export default function HomePage() {
           </section>
         </aside>
 
-        {/* RIGHT COLUMN – Images, analysis, history, radar */}
+        {/* RIGHT COLUMN */}
         <main className="flex-1 space-y-4">
-          {/* Step indicator */}
+          {/* Steps */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between text-[11px] text-zinc-400">
-              {["Capture charts", "Queue screenshots", "Read playbook"].map(
+              {["Timeframes & charts", "Playbook", "Compare & plan"].map(
                 (label, idx) => (
                   <div key={label} className="flex flex-1 items-center">
                     <div className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900 text-[11px] text-zinc-400 ring-1 ring-zinc-700">
@@ -863,42 +835,113 @@ export default function HomePage() {
                 ),
               )}
             </div>
-            <p className="text-[11px] text-zinc-500">
-              Screenshots and analyses are stored in the database per pair. You
-              can go back in time and load previous playbooks without spending
-              more credits.
-            </p>
           </section>
 
-          {/* Images / inputs */}
-          <section className="grid gap-4 rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg lg:grid-cols-2">
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold text-zinc-50">
-                1. Upload chart screenshots
-              </h2>
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={handleFilesChange}
-                className="text-xs"
-              />
-              <p className="text-[11px] text-zinc-500">
-                Select multiple images at once, for example H4, H1, M15 and M5.
-                They stay attached to this pair in the database until you remove
-                them.
+          {/* Timeframes + screenshots merged */}
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-50">
+                  1. Timeframes & chart screenshots
+                </h2>
+                <p className="text-[11px] text-zinc-500">
+                  Select the structure you&apos;re studying, then upload or
+                  paste the actual TradingView charts.
+                </p>
+              </div>
+              <div className="rounded-full bg-zinc-900 px-3 py-1 text-[11px] text-zinc-400">
+                {selectedTimeframes.length
+                  ? `TFs: ${selectedTimeframes.join(", ")}`
+                  : "No timeframe selected"}
+              </div>
+            </div>
+
+            {/* Timeframe chips */}
+            <div className="mt-3">
+              <p className="mb-1 text-[11px] font-semibold text-zinc-400">
+                Timeframe stack
               </p>
+              <div className="flex flex-wrap gap-1.5">
+                {allTimeframes.map((tf) => {
+                  const active = selectedTimeframes.includes(tf);
+                  const endTs = candleEnds[tf];
+                  const remainingMs =
+                    typeof endTs === "number" ? endTs - nowTs : null;
+                  const isClosed =
+                    remainingMs !== null &&
+                    Number.isFinite(remainingMs) &&
+                    remainingMs <= 0;
+                  return (
+                    <button
+                      key={tf}
+                      type="button"
+                      onClick={() => toggleTimeframe(tf)}
+                      className={`relative rounded-full px-3 py-1 text-[11px] ${
+                        active
+                          ? "bg-emerald-500 text-black"
+                          : "bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+                      }`}
+                    >
+                      {tf}
+                      {isClosed && (
+                        <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* candle timers */}
+              <div className="mt-2 space-y-1 text-[11px] text-zinc-500">
+                {selectedTimeframes.map((tf) => {
+                  const endTs = candleEnds[tf];
+                  if (!endTs) return null;
+                  const remaining = endTs - nowTs;
+                  const isClosed = remaining <= 0;
+                  return (
+                    <div key={tf}>
+                      {tf}:{" "}
+                      {isClosed
+                        ? "candle closed – update chart if you want fresh analysis"
+                        : `~${formatRemaining(
+                            remaining,
+                          )} left in current candle (approximate)`}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="space-y-3">
-              <h2 className="text-sm font-semibold text-zinc-50">
-                2. Or paste screenshots from clipboard
-              </h2>
-              <ClipboardPasteZone onImages={handlePasteImages} />
+            {/* Upload + paste in one area */}
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-zinc-400">
+                  Upload chart screenshots
+                </p>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleFilesChange}
+                  className="text-xs"
+                />
+                <p className="text-[11px] text-zinc-500">
+                  You can select multiple images at once (H4, H1, M15, M5).
+                  They stay attached to this pair in the database until you
+                  remove them.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-zinc-400">
+                  Or paste screenshots from clipboard
+                </p>
+                <ClipboardPasteZone onImages={handlePasteImages} />
+              </div>
             </div>
 
+            {/* Preview of stored screenshots */}
             {chartImages.length > 0 && (
-              <div className="col-span-full mt-2 rounded-lg border border-zinc-800 bg-black/50 p-3 text-[11px] text-zinc-300">
+              <div className="mt-3 rounded-lg border border-zinc-800 bg-black/50 p-3 text-[11px] text-zinc-300">
                 <div className="mb-1 flex items-center justify-between">
                   <p className="font-semibold">
                     Screenshots stored for {selectedPair || "—"} (
@@ -914,6 +957,7 @@ export default function HomePage() {
                       key={img.id}
                       className="overflow-hidden rounded-md border border-zinc-800 bg-black"
                     >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={img.dataUrl}
                         alt={img.name}
@@ -931,15 +975,15 @@ export default function HomePage() {
             <div className="mb-2 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-50">
-                  3. Multi timeframe playbook for{" "}
+                  2. Multi timeframe playbook for{" "}
                   <span className="text-emerald-300">
                     {selectedPair || "—"}
                   </span>
                 </h2>
                 <p className="text-[11px] text-zinc-500">
-                  Structured like a mini ebook: context, liquidity story, entry
-                  plan, risk, red flags, next-move scenarios, checklist and
-                  practice links.
+                  Structured like a mini ebook: context, liquidity story,
+                  entry plan, risk, red flags, next-move scenarios,
+                  checklist, and practice links.
                 </p>
               </div>
               {analysis && (
@@ -960,61 +1004,49 @@ export default function HomePage() {
             <div className="max-h-[460px] overflow-auto rounded-md border border-zinc-800 bg-black/40 p-3">
               {analysis ? (
                 <div className="space-y-4 text-sm">
-                  {/* Overview */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
                       1. Overview – what the market is doing
                     </h3>
                     {renderParagraphs(analysis.overview)}
                   </div>
-
-                  {/* HTF Bias */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
                       2. Higher timeframe bias and structure
                     </h3>
                     {renderParagraphs(analysis.htfBias)}
                   </div>
-
-                  {/* Liquidity story */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
                       3. Liquidity story – where the money sits
                     </h3>
                     {renderParagraphs(analysis.liquidityStory)}
                   </div>
-
-                  {/* Entry plan */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
                       4. Execution plan – how to enter
                     </h3>
                     {renderParagraphs(analysis.entryPlan)}
                   </div>
-
-                  {/* Risk management */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-zinc-300">
                       5. Risk management and trade handling
                     </h3>
                     {renderParagraphs(analysis.riskManagement)}
                   </div>
-
-                  {/* Red flags */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-red-300">
                       6. Red flags – when not to take this setup
                     </h3>
                     {renderParagraphs(analysis.redFlags)}
                   </div>
-
-                  {/* Scenario / next move */}
                   <div>
                     <h3 className="mb-1 text-[13px] font-semibold uppercase tracking-wide text-emerald-300">
                       7. Scenario for the next possible move
                     </h3>
                     <p className="mb-1 text-[11px] text-zinc-500">
-                      Educational if-then scenarios only. Not financial advice.
+                      Educational if-then scenarios only. Not financial
+                      advice.
                     </p>
                     {renderParagraphs(analysis.nextMove)}
                     {analysis.qualityReason && (
@@ -1043,7 +1075,6 @@ export default function HomePage() {
                         <p className="text-zinc-500">Tap items to toggle</p>
                       </div>
                     </div>
-
                     {checklist.length ? (
                       <ul className="space-y-1 text-[13px] text-zinc-200">
                         {checklist.map((item, idx) => (
@@ -1078,12 +1109,12 @@ export default function HomePage() {
                         No checklist items were generated for this run.
                       </p>
                     )}
-
                     {allDone && (
                       <p className="mt-3 rounded-md bg-emerald-500/10 px-2 py-2 text-[11px] text-emerald-300">
-                        All checklist items are marked as satisfied. This does
-                        not guarantee a winning trade, but it means the setup
-                        matches the model. Always follow your own risk plan.
+                        All checklist items are marked as satisfied. This
+                        does not guarantee a winning trade, but it means the
+                        setup matches the model. Always follow your own risk
+                        plan.
                       </p>
                     )}
                   </div>
@@ -1095,8 +1126,8 @@ export default function HomePage() {
                     </h3>
                     <p className="mb-2 text-[11px] text-zinc-500">
                       Use these as drawing instructions on your screenshots:
-                      boxes for order blocks, arrows for liquidity sweeps, and
-                      labels for entry, stop and target.
+                      boxes for order blocks, arrows for liquidity sweeps,
+                      and labels for entry, stop and target.
                     </p>
                     {analysis.screenshotGuides &&
                     analysis.screenshotGuides.length ? (
@@ -1124,20 +1155,20 @@ export default function HomePage() {
                       </div>
                     ) : (
                       <p className="text-[11px] text-zinc-500">
-                        No screenshot overlay ideas were generated for this run.
+                        No screenshot overlay ideas were generated for this
+                        run.
                       </p>
                     )}
                   </div>
 
-                  {/* Learning resources – search links */}
+                  {/* Learning links */}
                   <div className="mt-3 rounded-lg border border-zinc-800 bg-black/60 p-3">
                     <h3 className="mb-1 text-[13px] font-semibold text-zinc-100">
                       🎓 Practice resources for this idea
                     </h3>
                     <p className="mb-2 text-[11px] text-zinc-500">
                       These buttons open search pages so you can find example
-                      videos and images on other platforms. Look for visuals
-                      that match what the analysis described.
+                      videos and images on other platforms.
                     </p>
                     {analysis.learningQueries &&
                     analysis.learningQueries.length ? (
@@ -1216,18 +1247,18 @@ export default function HomePage() {
                 <p className="text-xs text-zinc-500">
                   Once you store screenshots and click{" "}
                   <span className="font-semibold">Analyze Charts</span>, you
-                  will get a structured playbook here. Every run is stored, so
-                  you can compare how the story changed over time.
+                  will get a structured playbook here. Every run is stored,
+                  so you can compare how the story changed over time.
                 </p>
               )}
             </div>
           </section>
 
-          {/* NEW: History section */}
+          {/* History */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-zinc-50">
-                4. Recent analyses for this pair
+                3. Recent analyses for this pair
               </h2>
               <span className="text-[11px] text-zinc-400">
                 Latest {historyEntries.length || 0} snapshots
@@ -1290,18 +1321,18 @@ export default function HomePage() {
               ) : (
                 <p className="text-[11px] text-zinc-500">
                   No history for this pair yet. Every time you analyze, a
-                  snapshot is saved here so you can later compare how the market
-                  evolved.
+                  snapshot is saved here so you can later compare how the
+                  market evolved.
                 </p>
               )}
             </div>
           </section>
 
-          {/* Setup radar and predictions across pairs */}
+          {/* Radar */}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-950/80 p-4 text-xs shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-zinc-50">
-                5. Setup radar and predictions across pairs
+                4. Setup radar and predictions across pairs
               </h2>
               <span className="text-[11px] text-zinc-400">
                 Sorted by quality score (A+ setups at the top)
@@ -1349,9 +1380,9 @@ export default function HomePage() {
               </div>
             ) : (
               <p className="text-[11px] text-zinc-500">
-                Once you have analysed a few pairs, this section will list them
-                here and show which ones look closest to an A+ setup. This is
-                for study and planning only, not financial advice.
+                Once you have analysed a few pairs, this section will list
+                them here and show which ones look closest to an A+ setup.
+                This is for study and planning only, not financial advice.
               </p>
             )}
           </section>
