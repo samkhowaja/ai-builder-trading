@@ -11,11 +11,9 @@ import React, {
 } from "react";
 import Image from "next/image";
 
-// --------------------------------------------------
-// Defaults
-// --------------------------------------------------
-
-const DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
+// -----------------------------
+// Types
+// -----------------------------
 
 type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1";
 
@@ -45,9 +43,18 @@ type AttachedScreenshot = {
   timeframeHint?: Timeframe;
 };
 
-// --------------------------------------------------
-// Helper
-// --------------------------------------------------
+type BuildInfo = {
+  version: string;
+  sha: string;
+  branch: string;
+  builtAt: string;
+};
+
+// -----------------------------
+// Constants / helpers
+// -----------------------------
+
+const DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "XAUUSD", "NAS100", "US30"];
 
 const timeframes: Timeframe[] = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 
@@ -56,45 +63,46 @@ function formatDate(dt: string | Date) {
   return d.toLocaleString();
 }
 
-// --------------------------------------------------
-// Main Page Component
-// --------------------------------------------------
+// -----------------------------
+// Page component
+// -----------------------------
 
 export default function HomePage() {
-  // workspace / navigation
+  // sidebar
   const [pairs, setPairs] = useState<string[]>(DEFAULT_PAIRS);
   const [selectedPair, setSelectedPair] = useState<string>(DEFAULT_PAIRS[0]);
   const [view, setView] = useState<"dashboard" | "pair">("dashboard");
 
-  // timeframe + screenshots
+  // upload / analysis inputs
   const [selectedTFs, setSelectedTFs] = useState<Timeframe[]>(["M15", "H1", "H4"]);
   const [screenshots, setScreenshots] = useState<AttachedScreenshot[]>([]);
   const [prompt, setPrompt] = useState(
-    "- Tell me the higher timeframe bias and why.\n- Is there liquidity being grabbed here?\n- Where is a high-probability entry with SL/TP idea?"
+    "- Tell me the higher timeframe bias and why.\n" +
+      "- Is there liquidity being grabbed here?\n" +
+      "- Where is a high-probability entry with SL/TP idea?"
   );
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  // analysis snapshots per pair
+  // analysis snapshots in memory (not DB yet)
   const [snapshots, setSnapshots] = useState<PairAnalysisSnapshot[]>([]);
-  const [currentAnalysis, setCurrentAnalysis] = useState<PairAnalysisSnapshot | null>(null);
+  const [currentAnalysis, setCurrentAnalysis] =
+    useState<PairAnalysisSnapshot | null>(null);
 
-  // --------------------------------------------------
-  // Load pairs from API (but keep defaults if it fails)
-  // --------------------------------------------------
+  // build / version info
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+
+  // -----------------------------
+  // Fetch pairs from /api/pairs (optional override)
+  // -----------------------------
 
   useEffect(() => {
     async function loadPairs() {
       try {
         const res = await fetch("/api/pairs", { cache: "no-store" });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
-        // support:
-        //   ["EURUSD", "GBPUSD", ...] OR
-        //   [{ symbol: "EURUSD", ...}, ...]
         const symbols: string[] = Array.isArray(data)
           ? data
               .map((item: any) =>
@@ -113,14 +121,13 @@ export default function HomePage() {
         }
       } catch (err) {
         console.warn("[pairs] Failed to load from /api/pairs, using defaults", err);
-        // keep DEFAULT_PAIRS
       }
     }
 
     loadPairs();
   }, []);
 
-  // ensure selectedPair is always valid
+  // ensure we always have a selected pair
   useEffect(() => {
     if (!pairs.length) return;
     if (!selectedPair || !pairs.includes(selectedPair)) {
@@ -128,9 +135,27 @@ export default function HomePage() {
     }
   }, [pairs, selectedPair]);
 
-  // --------------------------------------------------
-  // Screenshot handlers
-  // --------------------------------------------------
+  // -----------------------------
+  // Fetch build / version info
+  // -----------------------------
+
+  useEffect(() => {
+    async function loadVersion() {
+      try {
+        const res = await fetch("/api/version", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setBuildInfo(data);
+      } catch (err) {
+        console.warn("[version] Failed to load /api/version", err);
+      }
+    }
+    loadVersion();
+  }, []);
+
+  // -----------------------------
+  // Upload handlers
+  // -----------------------------
 
   const handleTimeframeToggle = (tf: Timeframe) => {
     setSelectedTFs((prev) =>
@@ -143,7 +168,9 @@ export default function HomePage() {
     if (!files.length) return;
 
     const newShots: AttachedScreenshot[] = files.map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random()
+        .toString(36)
+        .slice(2)}`,
       file,
       previewUrl: URL.createObjectURL(file),
     }));
@@ -164,7 +191,9 @@ export default function HomePage() {
     if (!files.length) return;
 
     const newShots: AttachedScreenshot[] = files.map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random()
+        .toString(36)
+        .slice(2)}`,
       file,
       previewUrl: URL.createObjectURL(file),
     }));
@@ -181,13 +210,12 @@ export default function HomePage() {
     setScreenshots([]);
   };
 
-  // --------------------------------------------------
-  // Analyze charts – calls your existing /api/analyze-charts
-  // --------------------------------------------------
+  // -----------------------------
+  // Analyze charts: calls /api/analyze-charts
+  // -----------------------------
 
   const handleAnalyze = useCallback(async () => {
-    if (!selectedPair) return;
-    if (!screenshots.length) return;
+    if (!selectedPair || !screenshots.length) return;
 
     setIsAnalyzing(true);
     setAnalysisError(null);
@@ -207,24 +235,17 @@ export default function HomePage() {
         body: formData,
       });
 
+      const text = await res.text();
+
       if (!res.ok) {
-        const text = await res.text();
+        console.error("analyze-charts error:", text);
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
 
-      const data = await res.json();
-      // Expecting something like:
-      // { id, quality, sections: [{title, body, checklist: [...] }], createdAt }
-      const snapshot: PairAnalysisSnapshot = {
-        id: data.id ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        pair: selectedPair,
-        createdAt: data.createdAt ?? new Date().toISOString(),
-        quality: data.quality ?? "A",
-        sections: data.sections ?? [],
-      };
+      const data: PairAnalysisSnapshot = JSON.parse(text);
 
-      setSnapshots((prev) => [snapshot, ...prev]);
-      setCurrentAnalysis(snapshot);
+      setSnapshots((prev) => [data, ...prev]);
+      setCurrentAnalysis(data);
       setView("pair");
     } catch (err: any) {
       console.error("analyze error", err);
@@ -236,9 +257,9 @@ export default function HomePage() {
     }
   }, [selectedPair, screenshots, prompt, selectedTFs]);
 
-  // --------------------------------------------------
-  // Rendering helpers
-  // --------------------------------------------------
+  // -----------------------------
+  // Derived dashboard stats
+  // -----------------------------
 
   const dashboardWeeklyCount = snapshots.filter(
     (s) => s.pair === selectedPair
@@ -257,9 +278,9 @@ export default function HomePage() {
   const checklistPercent =
     checklistTotal > 0 ? Math.round((checklistDone / checklistTotal) * 100) : 0;
 
-  // --------------------------------------------------
-  // UI
-  // --------------------------------------------------
+  // -----------------------------
+  // Render
+  // -----------------------------
 
   return (
     <div className="min-h-screen bg-[#02040a] text-slate-100">
@@ -270,9 +291,7 @@ export default function HomePage() {
             <span className="text-emerald-400 font-semibold text-sm">AI</span>
           </div>
           <div className="flex flex-col leading-tight">
-            <span className="font-semibold text-sm">
-              Trading Companion
-            </span>
+            <span className="font-semibold text-sm">Trading Companion</span>
             <span className="text-xs text-slate-400">
               Multi timeframe chart analyzer and playbook builder
             </span>
@@ -291,9 +310,9 @@ export default function HomePage() {
         </nav>
       </header>
 
-      {/* Main layout */}
+      {/* Layout */}
       <main className="flex gap-4 px-6 py-4">
-        {/* Sidebar: Dashboard + pairs */}
+        {/* Sidebar */}
         <aside className="w-64 flex-shrink-0">
           <div className="rounded-3xl bg-[#020814] border border-emerald-800/40 shadow-lg shadow-emerald-900/20 p-3 mb-4">
             <button
@@ -344,9 +363,9 @@ export default function HomePage() {
           </div>
         </aside>
 
-        {/* Main content */}
+        {/* Right side */}
         <section className="flex-1 space-y-4">
-          {/* Dashboard cards at top – always visible */}
+          {/* Dashboard cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {/* Weekly performance */}
             <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-4 py-3">
@@ -416,7 +435,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Main workspace depending on view */}
+          {/* Main workspace */}
           {view === "dashboard" ? (
             <div className="rounded-3xl bg-slate-950/60 border border-slate-800 px-5 py-6 text-sm text-slate-300">
               <div className="font-semibold mb-2">How to use this dashboard</div>
@@ -427,14 +446,14 @@ export default function HomePage() {
                   questions (liquidity, bias, entries, SL/TP).
                 </li>
                 <li>
-                  Each analysis is stored as a snapshot so you can review how the
-                  story evolved over time.
+                  Every analysis run is shown here as a snapshot. Later we’ll
+                  hook this into the database so they persist across refresh.
                 </li>
               </ul>
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Workflow steps */}
+              {/* Steps indicator */}
               <div className="flex items-center gap-3 text-xs text-slate-400">
                 <div className="flex items-center gap-2">
                   <div className="h-6 w-6 rounded-full border border-emerald-500 flex items-center justify-center text-[11px] text-emerald-300">
@@ -453,7 +472,7 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Timeframes + upload */}
+              {/* Upload area */}
               <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-5 py-5">
                 <div className="flex items-center justify-between mb-3">
                   <div className="font-semibold text-sm">
@@ -465,7 +484,7 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                {/* Timeframe pills */}
+                {/* Timeframes */}
                 <div className="mb-4">
                   <div className="text-[11px] text-slate-400 mb-1">
                     Timeframe stack
@@ -491,9 +510,9 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                {/* Upload / paste */}
+                {/* upload / paste */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* File input */}
+                  {/* file input */}
                   <div className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-4">
                     <div className="text-xs font-semibold mb-2">
                       1. Upload chart screenshots
@@ -512,7 +531,7 @@ export default function HomePage() {
                     </p>
                   </div>
 
-                  {/* Paste from clipboard */}
+                  {/* paste from clipboard */}
                   <div className="rounded-2xl border border-slate-700/80 bg-slate-950/70 px-4 py-4">
                     <div className="text-xs font-semibold mb-2">
                       2. Or paste screenshots from clipboard
@@ -528,14 +547,14 @@ export default function HomePage() {
                       <div>
                         In TradingView, copy a screenshot to clipboard, click
                         this box, then press Ctrl+V or Cmd+V. They will be
-                        attached to <span className="font-semibold">{selectedPair}</span>{" "}
-                        on the server.
+                        attached to{" "}
+                        <span className="font-semibold">{selectedPair}</span>.
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Attached screenshots */}
+                {/* attached screenshots */}
                 <div className="mt-4">
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-xs font-semibold text-slate-200">
@@ -588,7 +607,7 @@ export default function HomePage() {
                   )}
                 </div>
 
-                {/* Prompt + analyze */}
+                {/* prompt + analyze */}
                 <div className="mt-4 flex flex-col md:flex-row gap-4 items-stretch">
                   <div className="flex-1">
                     <div className="text-xs font-semibold mb-1">
@@ -632,7 +651,7 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Analysis ebook */}
+              {/* Ebook-style analysis */}
               {currentAnalysis && (
                 <div className="rounded-3xl bg-slate-950/70 border border-slate-800 px-5 py-5">
                   <div className="flex items-center justify-between mb-3">
@@ -688,6 +707,14 @@ export default function HomePage() {
           )}
         </section>
       </main>
+
+      {/* Version banner */}
+      {buildInfo && (
+        <div className="fixed bottom-2 right-3 text-[10px] text-slate-600 bg-slate-950/80 border border-slate-800 px-2 py-1 rounded-full">
+          {buildInfo.version} · {buildInfo.sha} ·{" "}
+          {new Date(buildInfo.builtAt).toLocaleString()}
+        </div>
+      )}
     </div>
   );
 }
